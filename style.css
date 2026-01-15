@@ -290,7 +290,7 @@ h6 span{
 .box { 
 	width: 200px;
 	height: 100px;
-	background-color: #1f2029;
+	background-color: #1f2029 white;
 	border: 2px;
 	padding: 10px;
 	margin: 10px;
