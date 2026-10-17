@@ -52,7 +52,8 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v4</small></h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v5</small></h1>
+  <div class="status" id="rtcInfo"></div>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
   <button id="btnViewer" class="alt">📱 I'm on the iPhone (headset viewer)</button>
@@ -140,12 +141,31 @@
   <label class="check"><input type="checkbox" id="chkHud"> Show status text (top-left)</label>
 </div>
 
+<script>
+// If the unprefixed constructor is missing or stubbed out, fall back to a prefixed one (also benefits PeerJS).
+(function () {
+  if (typeof window.RTCPeerConnection === 'function') return;
+  var alt = window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+  if (alt) { try { Object.defineProperty(window, 'RTCPeerConnection', { value: alt, configurable: true, writable: true }); } catch (e) {} }
+})();
+</script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 (() => {
 'use strict';
 const $ = id => document.getElementById(id);
 const PREFIX = 'cdesk-';
+const RTC = typeof window.RTCPeerConnection === 'function' ? window.RTCPeerConnection : (window.webkitRTCPeerConnection || window.mozRTCPeerConnection);
+const newPC = cfg => {
+  if (typeof RTC !== 'function') throw new Error('WebRTC is blocked or missing in this browser (typeof RTCPeerConnection = ' + typeof window.RTCPeerConnection + '). Try another browser, a private window, or disable privacy extensions.');
+  return new RTC(cfg);
+};
+{
+  const el = document.getElementById('rtcInfo');
+  const ok = typeof RTC === 'function';
+  el.textContent = (ok ? 'WebRTC: OK' : 'WebRTC: NOT AVAILABLE here (typeof RTCPeerConnection = ' + typeof window.RTCPeerConnection + ')') + ' · ' + navigator.userAgent.slice(0, 110);
+  if (!ok) el.style.color = '#ff8a8a';
+}
 
 /* ------------------------------------------------------------------ UI */
 function showScreen(id) {
@@ -327,7 +347,7 @@ $('mkOffer').onclick = async () => {
   if (!senderStream) { $('mStatus').textContent = 'Share your screen first (button at the top).'; return; }
   try {
     if (mpc) mpc.close();
-    const pc = mpc = new RTCPeerConnection(ICE);
+    const pc = mpc = newPC(ICE);
     senderStream.getTracks().forEach(t => pc.addTrack(t, senderStream));
     pc.addEventListener('iceconnectionstatechange', () => {
       const st = pc.iceConnectionState;
@@ -358,7 +378,7 @@ $('makeAnswer').onclick = async () => {
     // Camera permission lets Safari share real local addresses, which makes the direct link far more reliable.
     try { (await navigator.mediaDevices.getUserMedia({ video: true })).getTracks().forEach(t => t.stop()); } catch (e) {}
     if (ppc) ppc.close();
-    const pc = ppc = new RTCPeerConnection(ICE);
+    const pc = ppc = newPC(ICE);
     pc.addEventListener('track', ev => {
       scrV.srcObject = ev.streams[0] || new MediaStream([ev.track]);
       scrV.play().catch(() => {});
@@ -595,7 +615,7 @@ function updateHud(now, camOK, scrOK) {
   if (now - hudT < 400) return; hudT = now;
   const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'v4 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+  el.textContent = 'v5 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
     (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data');
 }
 
