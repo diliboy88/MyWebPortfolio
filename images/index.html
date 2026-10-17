@@ -52,7 +52,7 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v5</small></h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v6</small></h1>
   <div class="status" id="rtcInfo"></div>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
@@ -90,7 +90,7 @@
     <div class="status" id="mStatus"></div>
   </details>
   <video id="preview" class="preview" playsinline muted autoplay hidden></video>
-  <p style="font-size:13px">Tips: share a whole screen (or a second/virtual display) rather than a window, and keep this tab open. In Chrome you can crank the capture to 60fps; Safari works too.</p>
+  <p style="font-size:13px">Tips for readable text: share a virtual second display set to a LOW resolution such as 1280×720 (apps like DeskPad or BetterDisplay can create one), so everything is drawn big, and keep this tab open. In Chrome you can crank the capture to 60fps; Safari works too.</p>
   <button class="alt small" data-back>← Back</button>
 </section>
 
@@ -139,6 +139,7 @@
   <label class="check"><input type="checkbox" id="chkLock"> Pin screen to my head (ignore gyro)</label>
   <label class="check"><input type="checkbox" id="chkFlip"> Flip camera 180° (if passthrough is upside down)</label>
   <label class="check"><input type="checkbox" id="chkHud"> Show status text (top-left)</label>
+  <label class="check"><input type="checkbox" id="chkHand"> Hand control: pinch to grab and move the screen, two hands to resize (experimental)</label>
 </div>
 
 <script>
@@ -181,7 +182,7 @@ $('btnViewer').onclick = () => showScreen('viewer');
 document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => location.reload());
 
 /* ------------------------------------------------------------ settings */
-const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true };
+const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true, sharp:0.5, dpr:3, hand:false };
 const SLIDERS = [
   ['fov',    'Zoom (lower = bigger picture)', 0.25, 1.2, 0.01],
   ['k1',     'Lens correction k1', 0, 1, 0.01],
@@ -192,6 +193,8 @@ const SLIDERS = [
   ['camFov', 'iPhone camera field of view (°)', 40, 110, 1],
   ['camOp',  'Passthrough brightness', 0, 1, 0.05],
   ['scrOp',  'Mac screen opacity', 0.1, 1, 0.05],
+  ['sharp',  'Text sharpening', 0, 1.5, 0.05],
+  ['dpr',    'Render resolution (lower = faster)', 1, 3, 0.25],
 ];
 let S = Object.assign({}, DEFAULTS);
 try { Object.assign(S, JSON.parse(localStorage.getItem('cdesk2') || '{}')); } catch (e) {}
@@ -207,14 +210,15 @@ function buildPanel() {
     inp.oninput = () => { S[k] = +inp.value; out.textContent = S[k]; saveS(); };
     box.appendChild(row);
   }
-  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip; $('chkHud').checked = S.hud;
+  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip; $('chkHud').checked = S.hud; $('chkHand').checked = S.hand;
 }
 $('chkLock').onchange = e => { S.lock = e.target.checked; saveS(); };
 $('chkFlip').onchange = e => { S.flip = e.target.checked; saveS(); };
 $('chkHud').onchange = e => { S.hud = e.target.checked; saveS(); };
+$('chkHand').onchange = e => { S.hand = e.target.checked; saveS(); if (S.hand) loadHands(); };
 $('resetS').onclick = () => { S = Object.assign({}, DEFAULTS); saveS(); buildPanel(); };
 $('closeS').onclick = () => { $('settings').hidden = true; };
-$('openSettings').onclick = () => { $('settings').hidden = false; };
+$('openSettings').onclick = () => { buildPanel(); $('settings').hidden = false; };
 buildPanel();
 
 /* -------------------------------------------------------------- sender */
@@ -227,7 +231,7 @@ $('share').onclick = async () => {
     senderStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60 }, cursor: 'always' }, audio: false });
   } catch (e) { $('sStatus').textContent = 'Screen share cancelled: ' + e.message; return; }
   const vt = senderStream.getVideoTracks()[0];
-  try { vt.contentHint = 'detail'; } catch (e) {}
+  try { vt.contentHint = 'text'; } catch (e) {}
   vt.onended = () => { $('sStatus').textContent = 'Screen sharing stopped.'; };
   const pv = $('preview'); pv.srcObject = senderStream; pv.hidden = false;
   startSenderPeer();
@@ -500,6 +504,7 @@ function recenter() {
   const ph = Math.asin(Math.max(-1, Math.min(1, fy)));
   const c = Math.cos(th), s = Math.sin(th), cp = Math.cos(ph), sp = Math.sin(ph);
   fixR = mmul([[1, 0, 0], [0, cp, sp], [0, -sp, cp]], [[c, 0, -s], [0, 1, 0], [s, 0, c]]);
+  scrYaw = 0; scrPitch = 0;
 }
 function onOrient(e) {
   if (e.beta == null) return;
@@ -516,6 +521,76 @@ function mouseR() {
 }
 
 /* ------------------------------------------------------------- WebGL */
+/* ------------------------------------------------------------ hand control */
+let scrYaw = 0, scrPitch = 0, Rhead = I3;
+let camTanX = 0.6, camTanY = 0.35, camAsp = 16 / 9;
+let hl = null, hlLoading = false, lastDet = 0, handDots = [0, 0, 0, 0, 0, 0];
+let grab = null, two = null;
+const pinchWas = [false, false];
+const MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest';
+const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+
+async function loadHands() {
+  if (hl || hlLoading) return;
+  hlLoading = true;
+  try {
+    toast('Loading hand tracking…', 4000);
+    const mp = await import(MP_BASE + '/vision_bundle.mjs');
+    const files = await mp.FilesetResolver.forVisionTasks(MP_BASE + '/wasm');
+    const make = delegate => mp.HandLandmarker.createFromOptions(files, { baseOptions: { modelAssetPath: HAND_MODEL, delegate }, runningMode: 'VIDEO', numHands: 2 });
+    try { hl = await make('GPU'); } catch (e) { hl = await make('CPU'); }
+    toast('Hand control ready: pinch to grab the screen', 3500);
+  } catch (e) {
+    toast('Hand tracking failed: ' + (e && e.message ? e.message : e), 7000);
+    S.hand = false; saveS();
+  }
+  hlLoading = false;
+}
+const wrapPi = a => Math.atan2(Math.sin(a), Math.cos(a));
+
+function procHands(now) {
+  if (!S.hand) { handDots = [0, 0, 0, 0, 0, 0]; grab = null; two = null; return; }
+  if (!hl) { loadHands(); return; }
+  if (!hasCam || camV.readyState < 2 || !camV.videoWidth || now - lastDet < 40) return;
+  lastDet = now;
+  let res;
+  try { res = hl.detectForVideo(camV, now); } catch (e) { return; }
+  const lms = (res && res.landmarks) || [];
+  const hands = lms.slice(0, 2).map(lm => {
+    const d = (a, b) => Math.hypot((lm[a].x - lm[b].x) * camAsp, lm[a].y - lm[b].y);
+    const size = Math.max(d(0, 9), 1e-4);                       // wrist to middle-finger knuckle
+    return { u: (lm[4].x + lm[8].x) / 2, v: (lm[4].y + lm[8].y) / 2, size, ratio: d(4, 8) / size };
+  });
+  for (let i = hands.length; i < 2; i++) pinchWas[i] = false;
+  const pin = hands.map((h, i) => (pinchWas[i] = pinchWas[i] ? h.ratio < 0.55 : h.ratio < 0.35));
+  handDots = [0, 0, 0, 0, 0, 0];
+  hands.forEach((h, i) => { handDots[i * 3] = h.u; handDots[i * 3 + 1] = h.v; handDots[i * 3 + 2] = pin[i] ? 2 : 1; });
+
+  const dirOf = h => {                                           // pinch point -> world direction
+    let cx = 2 * h.u - 1, cy = 1 - 2 * h.v;
+    if (S.flip) { cx = -cx; cy = -cy; }
+    const x = cx * camTanX, y = cy * camTanY, n = Math.hypot(x, y, 1), R = Rhead;
+    const l = [x / n, y / n, -1 / n];
+    return [0, 1, 2].map(k => R[k][0] * l[0] + R[k][1] * l[1] + R[k][2] * l[2]);
+  };
+  const active = hands.filter((h, i) => pin[i]);
+  if (active.length >= 2) {                                      // two hands: resize
+    const dd = Math.hypot((active[0].u - active[1].u) * camAsp, active[0].v - active[1].v);
+    if (!two) two = { d0: Math.max(dd, 1e-3), w0: S.width };
+    S.width += (Math.min(8, Math.max(0.5, two.w0 * dd / two.d0)) - S.width) * 0.3;
+    grab = null;
+  } else if (active.length === 1) {                              // one hand: move, and pull closer / push away
+    const h = active[0], w = dirOf(h);
+    const yawH = Math.atan2(-w[0], -w[2]), pitchH = Math.asin(Math.max(-1, Math.min(1, w[1])));
+    two = null;
+    if (!grab) grab = { yo: scrYaw - yawH, po: scrPitch - pitchH, s0: h.size, d0: S.dist };
+    scrYaw += wrapPi(yawH + grab.yo - scrYaw) * 0.6;
+    scrPitch += (Math.max(-1.2, Math.min(1.2, pitchH + grab.po)) - scrPitch) * 0.6;
+    const lg = Math.log(grab.s0 / h.size), eff = Math.sign(lg) * Math.max(0, Math.abs(lg) - 0.12);
+    S.dist += (Math.min(6, Math.max(0.6, grab.d0 * Math.exp(eff * 1.5))) - S.dist) * 0.25;
+  } else if (grab || two) { grab = null; two = null; saveS(); }
+}
+
 const VS = `attribute vec2 aPos; varying vec2 vUv;
 void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
 const FS = `precision highp float;
@@ -524,7 +599,9 @@ uniform sampler2D uCam, uScr;
 uniform mat3 uRot;
 uniform float uEye, uEyeAspect, uTan, uIpd, uDist, uWidth, uScrAspect;
 uniform float uCamOp, uScrOp, uHasCam, uHasScr, uCamFlip;
-uniform vec2 uK, uCamTan;
+uniform vec2 uK, uCamTan, uScrStep;
+uniform vec3 uH0, uH1;
+uniform float uCamAspect, uSharp;
 void main(){
   // Eye-local lens coordinates, then inverse lens distortion.
   vec2 p = (vUv - 0.5) * 2.0;
@@ -548,20 +625,32 @@ void main(){
   float t = (-uDist - o.z) / min(dir.z, -0.0001);
   vec3 h = o + dir * t;
   vec2 s = vec2(h.x / uWidth + 0.5, h.y / (uWidth / uScrAspect) + 0.5);
-  vec3 sc = texture2D(uScr, vec2(clamp(s.x,0.0,1.0), clamp(1.0 - s.y, 0.0, 1.0))).rgb;
+  vec2 suv = vec2(clamp(s.x,0.0,1.0), clamp(1.0 - s.y, 0.0, 1.0));
+  vec3 sc = texture2D(uScr, suv).rgb;
+  vec3 nb = texture2D(uScr, suv + vec2(uScrStep.x, 0.0)).rgb + texture2D(uScr, suv - vec2(uScrStep.x, 0.0)).rgb
+          + texture2D(uScr, suv + vec2(0.0, uScrStep.y)).rgb + texture2D(uScr, suv - vec2(0.0, uScrStep.y)).rgb;
+  sc = clamp(sc + uSharp * (sc - nb * 0.25), 0.0, 1.0);
   float inside = step(0.0, s.x) * step(s.x, 1.0) * step(0.0, s.y) * step(s.y, 1.0) * step(0.0, t) * uHasScr;
   float edge = step(-0.004, s.x) * step(s.x, 1.004) * step(-0.004, s.y) * step(s.y, 1.004) * step(0.0, t) * uHasScr;
   col = mix(col, vec3(0.55, 0.62, 0.72), (edge - inside) * 0.9);
   col = mix(col, sc, inside * uScrOp);
+  // hand markers: ring = hand seen, filled dot = pinching
+  float d0 = length((cuv - uH0.xy) * vec2(uCamAspect, 1.0));
+  float d1 = length((cuv - uH1.xy) * vec2(uCamAspect, 1.0));
+  float a0 = uH0.z > 1.5 ? 1.0 - smoothstep(0.018, 0.026, d0) : (uH0.z > 0.5 ? 1.0 - smoothstep(0.003, 0.006, abs(d0 - 0.035)) : 0.0);
+  float a1 = uH1.z > 1.5 ? 1.0 - smoothstep(0.018, 0.026, d1) : (uH1.z > 0.5 ? 1.0 - smoothstep(0.003, 0.006, abs(d1 - 0.035)) : 0.0);
+  col = mix(col, vec3(0.25, 1.0, 0.45), clamp(a0 + a1, 0.0, 1.0));
   gl_FragColor = vec4(col, 1.0);
 }`;
 
-let gl, prog, U = {}, texCam, texScr, glCanvas, camNew = true, scrNew = true;
+let gl, prog, U = {}, texCam, texScr, glCanvas, camNew = true, scrNew = true, isGL2 = false;
 const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
 function initGL() {
   glCanvas = $('gl');
-  gl = glCanvas.getContext('webgl', { antialias: false, alpha: false, powerPreference: 'high-performance', desynchronized: true });
+  const glOpts = { antialias: false, alpha: false, powerPreference: 'high-performance', desynchronized: true };
+  gl = glCanvas.getContext('webgl2', glOpts) || glCanvas.getContext('webgl', glOpts);
+  isGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
   if (!gl) { toast('WebGL is not available on this device', 6000); return false; }
   const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
@@ -575,25 +664,29 @@ function initGL() {
   const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'aPos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan'])
+  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan','uScrStep','uH0','uH1','uCamAspect','uSharp'])
     U[n] = gl.getUniformLocation(prog, n);
   const mk = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255])); return t; };
   texCam = mk(0); texScr = mk(1);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texScr);
+  if (isGL2) { gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); }
+  { const an = gl.getExtension('EXT_texture_filter_anisotropic');
+    if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT))); }
   gl.uniform1i(U.uCam, 0); gl.uniform1i(U.uScr, 1);
   if (hasRVFC) {
     const w = (v, set) => { const cb = () => { set(); v.requestVideoFrameCallback(cb); }; v.requestVideoFrameCallback(cb); };
     w(camV, () => camNew = true); w(scrV, () => scrNew = true);
   }
-  const resize = () => { const d = Math.min(window.devicePixelRatio || 1, 2);
+  const resize = () => { const d = Math.min(window.devicePixelRatio || 1, S.dpr);
     glCanvas.width = Math.round(innerWidth * d); glCanvas.height = Math.round(innerHeight * d); };
   addEventListener('resize', resize); addEventListener('orientationchange', () => setTimeout(resize, 200)); resize();
 
   // Input: tap recenters, two-finger tap opens settings, drag looks around when there's no gyro.
   const st = $('stage');
-  st.addEventListener('touchstart', e => { if (e.touches.length >= 2) { $('settings').hidden = false; e.preventDefault(); } }, { passive: false });
+  st.addEventListener('touchstart', e => { if (e.touches.length >= 2) { buildPanel(); $('settings').hidden = false; e.preventDefault(); } }, { passive: false });
   st.addEventListener('click', () => { if (!$('settings').hidden) return; recenter(); if (!sensor) { mYaw = 0; mPitch = 0; rawR = mouseR(); } toast('Recentered', 1200); });
   glCanvas.addEventListener('pointerdown', e => { if (!sensor) drag = [e.clientX, e.clientY]; });
   addEventListener('pointerup', () => { drag = null; });
@@ -608,6 +701,7 @@ function initGL() {
 function upload(tex, unit, video) {
   gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  if (isGL2 && unit === 1) gl.generateMipmap(gl.TEXTURE_2D);
 }
 
 let hudT = 0;
@@ -615,12 +709,14 @@ function updateHud(now, camOK, scrOK) {
   if (now - hudT < 400) return; hudT = now;
   const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'v5 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
-    (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data');
+  el.textContent = 'v6 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+    (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data') + (S.hand ? ' | hands ' + (hl ? 'on' : 'loading') : '');
 }
 
 function frame() {
   requestAnimationFrame(frame);
+  { const d = Math.min(window.devicePixelRatio || 1, S.dpr), tw = Math.round(innerWidth * d), th = Math.round(innerHeight * d);
+    if (glCanvas.width !== tw || glCanvas.height !== th) { glCanvas.width = tw; glCanvas.height = th; } }
   const W = glCanvas.width, H = glCanvas.height;
   const camOK = hasCam && camV.readyState >= 2 && camV.videoWidth > 0;
   const scrOK = hasScr && scrV.readyState >= 2 && scrV.videoWidth > 0;
@@ -628,8 +724,11 @@ function frame() {
   if (camOK) upload(texCam, 0, camV);
   if (scrOK) upload(texScr, 1, scrV);
   updateHud(performance.now(), camOK, scrOK);
+  procHands(performance.now());
 
-  const R = S.lock ? I3 : mmul(fixR, rawR);
+  Rhead = S.lock ? I3 : mmul(fixR, rawR);
+  const cyw = Math.cos(scrYaw), syw = Math.sin(scrYaw), cpw = Math.cos(scrPitch), spw = Math.sin(scrPitch);
+  const R = mmul(mmul([[1, 0, 0], [0, cpw, spw], [0, -spw, cpw]], [[cyw, 0, -syw], [0, 1, 0], [syw, 0, cyw]]), Rhead);
   gl.uniformMatrix3fv(U.uRot, false, new Float32Array([R[0][0],R[1][0],R[2][0], R[0][1],R[1][1],R[2][1], R[0][2],R[1][2],R[2][2]]));
   gl.uniform1f(U.uEyeAspect, (W / 2) / H);
   gl.uniform1f(U.uTan, S.fov);
@@ -639,10 +738,15 @@ function frame() {
   gl.uniform1f(U.uCamOp, S.camOp); gl.uniform1f(U.uScrOp, S.scrOp);
   gl.uniform1f(U.uHasCam, camOK ? 1 : 0); gl.uniform1f(U.uHasScr, scrOK ? 1 : 0);
   gl.uniform1f(U.uCamFlip, S.flip ? 1 : 0);
+  const foot = scrOK ? Math.min(3, Math.max(1, scrV.videoWidth * S.fov * 2 * S.dist / (S.width * H))) : 1;
+  gl.uniform2f(U.uScrStep, scrOK ? foot / scrV.videoWidth : 0, scrOK ? foot / scrV.videoHeight : 0);
+  gl.uniform1f(U.uSharp, S.sharp);
   // Camera FOV is measured along the long side of the video.
   const ca = camOK ? camV.videoWidth / camV.videoHeight : 16 / 9;
   const tl = Math.tan(S.camFov * Math.PI / 360);
-  gl.uniform2f(U.uCamTan, ca >= 1 ? tl : tl * ca, ca >= 1 ? tl / ca : tl);
+  camTanX = ca >= 1 ? tl : tl * ca; camTanY = ca >= 1 ? tl / ca : tl; camAsp = ca;
+  gl.uniform2f(U.uCamTan, camTanX, camTanY); gl.uniform1f(U.uCamAspect, ca);
+  gl.uniform3f(U.uH0, handDots[0], handDots[1], handDots[2]); gl.uniform3f(U.uH1, handDots[3], handDots[4], handDots[5]);
 
   const hw = Math.floor(W / 2);
   gl.uniform1f(U.uEye, -1); gl.viewport(0, 0, hw, H); gl.drawArrays(gl.TRIANGLES, 0, 3);
