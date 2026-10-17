@@ -50,7 +50,7 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk</h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v3</small></h1>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
   <button id="btnViewer" class="alt">📱 I'm on the iPhone (headset viewer)</button>
@@ -206,8 +206,10 @@ function startSenderPeer() {
     if (e.type === 'unavailable-id') { peer.destroy(); startSenderPeer(); }
     else $('sStatus').textContent = 'Connection error: ' + e.type;
   });
+  peer.on('disconnected', () => { $('sStatus').textContent = 'Lost the handshake server, reconnecting…'; try { peer.reconnect(); } catch (e) {} });
   peer.on('connection', conn => {
     pendingConn = conn;
+    $('sStatus').textContent = 'Headset found, connecting…';
     if ($('autoAllow').checked && !approvedOnce) { approve(); return; }
     $('allowMsg').textContent = 'A headset wants to see your screen. Is that you?';
     $('allowBox').hidden = false;
@@ -221,7 +223,15 @@ function approve() {
   approvedOnce = true;
   $('allowBox').hidden = true;
   const call = senderPeer.call(pendingConn.peer, senderStream);
-  $('sStatus').textContent = 'Headset connected. Streaming…';
+  $('sStatus').textContent = 'Headset approved, setting up the video link…';
+  try {
+    call.peerConnection.addEventListener('iceconnectionstatechange', () => {
+      const st = call.peerConnection.iceConnectionState;
+      $('sStatus').textContent = (st === 'connected' || st === 'completed') ? 'Headset connected. Streaming…'
+        : st === 'failed' ? 'Video link failed. Are both devices on the same Wi-Fi (not guest or cellular)?'
+        : 'Video link: ' + st;
+    });
+  } catch (e) {}
   const tune = async () => {
     try {
       const s = call.peerConnection.getSenders().find(x => x.track && x.track.kind === 'video');
@@ -283,8 +293,13 @@ function connectViewer(code) {
   viewerPeer = peer;
   peer.on('open', () => {
     macState = 'reaching Mac…';
+    let linked = false;
+    setTimeout(() => { if (!linked) { macState = 'no link to the Mac after 12s (same Wi-Fi? not guest or cellular?)'; toast('Cannot reach the Mac. Check both are on the same Wi-Fi.', 6000); } }, 12000);
     const conn = peer.connect(PREFIX + code, { reliable: true });
-    conn.on('open', () => { macState = 'waiting for Mac to approve'; toast('Waiting for the Mac to approve…', 4000); });
+    conn.on('open', () => {
+      linked = true; macState = 'waiting for Mac to approve'; toast('Waiting for the Mac to approve…', 4000);
+      setTimeout(() => { if (!hasScr) macState = 'linked, but no video yet (check the Mac page)'; }, 10000);
+    });
     conn.on('close', () => { hasScr = false; macState = 'disconnected'; toast('Mac disconnected'); });
     conn.on('error', () => toast('Could not reach the Mac'));
   });
@@ -302,6 +317,7 @@ function connectViewer(code) {
     });
     call.on('close', () => { hasScr = false; toast('Mac stream ended'); });
   });
+  peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
   peer.on('error', e => { macState = 'error: ' + e.type; toast(e.type === 'peer-unavailable' ? 'No Mac found with that code' : 'Connection error: ' + e.type, 5000); });
 }
 
@@ -456,7 +472,7 @@ function updateHud(now, camOK, scrOK) {
   if (now - hudT < 400) return; hudT = now;
   const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+  el.textContent = 'v3 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
     (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data');
 }
 
