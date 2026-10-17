@@ -27,6 +27,8 @@
   .status { color:var(--dim); font-size:14px; min-height:20px; }
   .link { font:13px ui-monospace, Menlo, monospace; word-break:break-all; color:var(--dim); user-select:all; -webkit-user-select:all; }
   video.preview { width:100%; border-radius:10px; background:#000; margin-top:10px; }
+  textarea { width:100%; font:12px ui-monospace, Menlo, monospace; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:10px; margin:6px 0; }
+  summary { cursor:pointer; font-weight:600; }
   label.row { display:grid; grid-template-columns: 1fr 60px; gap:4px 10px; align-items:center; margin:18px 0; font-size:17px; }
   label.row input[type=range] { grid-column:1 / -1; width:100%; height:40px; accent-color:var(--acc); }
   label.row output { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
@@ -50,7 +52,7 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v3</small></h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v4</small></h1>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
   <button id="btnViewer" class="alt">📱 I'm on the iPhone (headset viewer)</button>
@@ -76,6 +78,16 @@
     <button id="deny" class="alt">Deny</button>
   </div>
   <div class="status" id="sStatus"></div>
+  <details class="card" id="manualMac">
+    <summary>Not connecting? Pair manually (no server)</summary>
+    <p style="font-size:13px">1) Share your screen above. 2) Create the pairing text and send it to your iPhone (Universal Clipboard, AirDrop or Messages). 3) Paste the iPhone's reply here and tap Connect.</p>
+    <button id="mkOffer">Create pairing text</button>
+    <textarea id="offerOut" readonly rows="3" placeholder="Pairing text appears here"></textarea>
+    <button id="copyOffer" class="alt">Copy</button>
+    <textarea id="answerIn" rows="3" placeholder="Paste the iPhone's reply here"></textarea>
+    <button id="applyAnswer">Connect</button>
+    <div class="status" id="mStatus"></div>
+  </details>
   <video id="preview" class="preview" playsinline muted autoplay hidden></video>
   <p style="font-size:13px">Tips: share a whole screen (or a second/virtual display) rather than a window, and keep this tab open. In Chrome you can crank the capture to 60fps; Safari works too.</p>
   <button class="alt small" data-back>← Back</button>
@@ -88,6 +100,15 @@
   <input type="text" id="codeIn" placeholder="code" maxlength="6" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
   <button id="start">Start</button>
   <button id="openSettings" class="alt">⚙️ Settings</button>
+  <details class="card" id="manualPhone">
+    <summary>Not connecting? Pair manually (no server)</summary>
+    <p style="font-size:13px">Paste the pairing text from your Mac, tap Make reply, send the reply back to the Mac, then tap Start here (leave the code blank).</p>
+    <textarea id="offerIn" rows="3" placeholder="Paste the Mac's pairing text here"></textarea>
+    <button id="makeAnswer">Make reply</button>
+    <textarea id="answerOut" readonly rows="3" placeholder="Your reply appears here"></textarea>
+    <button id="copyAnswer" class="alt">Copy reply</button>
+    <div class="status" id="pStatus"></div>
+  </details>
   <div class="card" style="font-size:14px; color:var(--dim)">
     <b style="color:var(--fg)">In the headset</b><br>
     Tap the screen (or the headset button, if it taps) → recenter.<br>
@@ -255,6 +276,106 @@ $('allow').onclick = approve;
 const camV = $('camV'), scrV = $('scrV');
 let hasCam = false, hasScr = false;
 let macState = 'not started', linkState = '';
+
+/* ------------------------------------------------ manual pairing (no server) */
+const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+const b64 = u8 => { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
+const unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function pack(obj) {
+  const s = JSON.stringify(obj);
+  if (window.CompressionStream) {
+    const buf = await new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer();
+    return 'z' + b64(new Uint8Array(buf));
+  }
+  return 'j' + b64(new TextEncoder().encode(s));
+}
+async function unpack(t) {
+  t = t.replace(/\s+/g, '');
+  if (!t) throw new Error('Nothing pasted');
+  const bytes = unb64(t.slice(1));
+  if (t[0] === 'z') {
+    if (!window.DecompressionStream) throw new Error('This browser is too old to read the pairing text (needs iOS 16.4+)');
+    return JSON.parse(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text());
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+const iceDone = pc => new Promise(res => {
+  if (pc.iceGatheringState === 'complete') return res();
+  const t = setTimeout(res, 3000);
+  pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
+});
+async function copyText(ta, btn) {
+  try { await navigator.clipboard.writeText(ta.value); } catch (e) { ta.select(); try { document.execCommand('copy'); } catch (e2) {} }
+  const old = btn.textContent; btn.textContent = 'Copied ✓'; setTimeout(() => { btn.textContent = old; }, 1500);
+}
+async function tuneSender(pc) {
+  try {
+    const s = pc.getSenders().find(x => x.track && x.track.kind === 'video');
+    const p = s.getParameters();
+    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    p.encodings[0].maxBitrate = 20e6; p.encodings[0].maxFramerate = 60;
+    const w = (senderStream.getVideoTracks()[0].getSettings() || {}).width || 0;
+    if (w > 2048) p.encodings[0].scaleResolutionDownBy = w / 2048;
+    p.degradationPreference = 'maintain-resolution';
+    await s.setParameters(p);
+  } catch (e) {}
+}
+
+// Mac side
+let mpc = null;
+$('mkOffer').onclick = async () => {
+  if (!senderStream) { $('mStatus').textContent = 'Share your screen first (button at the top).'; return; }
+  try {
+    if (mpc) mpc.close();
+    const pc = mpc = new RTCPeerConnection(ICE);
+    senderStream.getTracks().forEach(t => pc.addTrack(t, senderStream));
+    pc.addEventListener('iceconnectionstatechange', () => {
+      const st = pc.iceConnectionState;
+      $('mStatus').textContent = (st === 'connected' || st === 'completed') ? 'Connected. Streaming…' : 'Video link: ' + st;
+      if (st === 'connected') tuneSender(pc);
+    });
+    $('mStatus').textContent = 'Creating…';
+    await pc.setLocalDescription(await pc.createOffer());
+    await iceDone(pc);
+    $('offerOut').value = await pack({ type: 'offer', sdp: pc.localDescription.sdp });
+    $('mStatus').textContent = 'Copy this to your iPhone, then paste its reply below.';
+  } catch (e) { $('mStatus').textContent = 'Error: ' + e.message; }
+};
+$('copyOffer').onclick = () => copyText($('offerOut'), $('copyOffer'));
+$('applyAnswer').onclick = async () => {
+  try {
+    if (!mpc) throw new Error('Create the pairing text first');
+    await mpc.setRemoteDescription(await unpack($('answerIn').value));
+    $('mStatus').textContent = 'Linking…';
+  } catch (e) { $('mStatus').textContent = 'Error: ' + e.message; }
+};
+
+// iPhone side
+let ppc = null;
+$('makeAnswer').onclick = async () => {
+  try {
+    const offer = await unpack($('offerIn').value);
+    // Camera permission lets Safari share real local addresses, which makes the direct link far more reliable.
+    try { (await navigator.mediaDevices.getUserMedia({ video: true })).getTracks().forEach(t => t.stop()); } catch (e) {}
+    if (ppc) ppc.close();
+    const pc = ppc = new RTCPeerConnection(ICE);
+    pc.addEventListener('track', ev => {
+      scrV.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+      scrV.play().catch(() => {});
+      hasScr = true; macState = 'stream received (manual)';
+      try { pc.getReceivers().forEach(r => { if ('playoutDelayHint' in r) r.playoutDelayHint = 0; }); } catch (e) {}
+    });
+    pc.addEventListener('iceconnectionstatechange', () => { linkState = pc.iceConnectionState; $('pStatus').textContent = 'Video link: ' + pc.iceConnectionState; });
+    $('pStatus').textContent = 'Creating reply…';
+    await pc.setRemoteDescription(offer);
+    await pc.setLocalDescription(await pc.createAnswer());
+    await iceDone(pc);
+    $('answerOut').value = await pack({ type: 'answer', sdp: pc.localDescription.sdp });
+    macState = 'manual pairing: waiting for the Mac';
+    $('pStatus').textContent = 'Copy the reply to your Mac, then tap Start here (leave the code blank).';
+  } catch (e) { $('pStatus').textContent = 'Error: ' + e.message; }
+};
+$('copyAnswer').onclick = () => copyText($('answerOut'), $('copyAnswer'));
 const pre = location.hash.slice(1).trim().toLowerCase();
 if (pre) { $('codeIn').value = pre.slice(0, 6); showScreen('viewer'); }
 
@@ -275,7 +396,9 @@ $('start').onclick = async () => {
   setTimeout(() => { recenter(); toast('Recentered (tap = recenter again, two-finger tap = settings)', 3500); }, 6000);
   startCamera();
   requestWake();
-  if (code) connectViewer(code); else { macState = 'no code (camera test)'; toast('Camera-only test (no code entered)', 3500); }
+  if (code) connectViewer(code);
+  else if (ppc) toast('Using the manual link to your Mac', 3000);
+  else { macState = 'no code (camera test)'; toast('Camera-only test (no code entered)', 3500); }
 };
 
 async function startCamera() {
@@ -472,7 +595,7 @@ function updateHud(now, camOK, scrOK) {
   if (now - hudT < 400) return; hudT = now;
   const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'v3 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+  el.textContent = 'v4 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
     (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data');
 }
 
