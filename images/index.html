@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cardboard Desk</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cardboard Desk">
+<meta name="theme-color" content="#000000">
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --card:#161a20; --line:#262c36; --fg:#e8ecf2; --dim:#8b95a5; --acc:#4da3ff; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:16px/1.45 -apple-system, system-ui, "Segoe UI", sans-serif; }
+  .screen { min-height:100%; padding:max(24px, env(safe-area-inset-top)) 20px 32px; max-width:560px; margin:0 auto; }
+  .screen[hidden] { display:none; }
+  h1 { font-size:28px; margin:12px 0 4px; letter-spacing:-0.02em; }
+  h2 { font-size:20px; margin:8px 0; }
+  p { color:var(--dim); margin:8px 0 16px; }
+  button { font:inherit; font-weight:600; color:#fff; background:var(--acc); border:0; border-radius:12px; padding:14px 18px; width:100%; margin:6px 0; cursor:pointer; }
+  button.alt { background:var(--card); border:1px solid var(--line); color:var(--fg); }
+  button.small { width:auto; padding:8px 14px; font-size:14px; }
+  input[type=text] { font:inherit; font-size:26px; letter-spacing:0.18em; text-transform:lowercase; text-align:center; width:100%; padding:14px; border-radius:12px; border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin:14px 0; }
+  .code { font:700 44px/1.1 ui-monospace, Menlo, monospace; letter-spacing:0.18em; text-align:center; padding:12px 0; color:var(--acc); }
+  .status { color:var(--dim); font-size:14px; min-height:20px; }
+  .link { font:13px ui-monospace, Menlo, monospace; word-break:break-all; color:var(--dim); user-select:all; -webkit-user-select:all; }
+  video.preview { width:100%; border-radius:10px; background:#000; margin-top:10px; }
+  label.row { display:grid; grid-template-columns: 1fr 52px; gap:2px 10px; align-items:center; margin:10px 0; font-size:14px; }
+  label.row input[type=range] { grid-column:1 / -1; width:100%; }
+  label.row output { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
+  label.check { display:flex; gap:10px; align-items:center; margin:10px 0; font-size:14px; }
+
+  #stage { position:fixed; inset:0; background:#000; z-index:10; }
+  #stage[hidden] { display:none; }
+  #gl { width:100%; height:100%; display:block; touch-action:none; }
+  #toast { position:fixed; left:50%; top:14px; transform:translateX(-50%); background:rgba(0,0,0,.7); color:#fff; padding:8px 14px; border-radius:20px; font-size:14px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:30; text-align:center; max-width:90vw; }
+  #toast.on { opacity:1; }
+  #rotate { position:absolute; inset:0; display:none; align-items:center; justify-content:center; text-align:center; background:#000; color:#fff; font-size:20px; padding:30px; z-index:5; }
+  @media (orientation: portrait) { #rotate { display:flex; } }
+  #settings { position:fixed; left:0; right:0; bottom:0; max-height:75vh; overflow:auto; background:rgba(14,16,20,.95); border-top:1px solid var(--line); border-radius:18px 18px 0 0; padding:14px 20px max(20px, env(safe-area-inset-bottom)); z-index:40; }
+  #settings[hidden] { display:none; }
+  .vid { position:fixed; left:0; top:0; width:2px; height:2px; opacity:.01; pointer-events:none; }
+</style>
+</head>
+<body>
+
+<!-- HOME -->
+<section class="screen" id="home">
+  <h1>Cardboard Desk</h1>
+  <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
+  <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
+  <button id="btnViewer" class="alt">📱 I'm on the iPhone (headset viewer)</button>
+  <p style="font-size:13px">The video goes directly between your devices over your Wi‑Fi (WebRTC). A public broker is only used for the initial handshake.</p>
+</section>
+
+<!-- SENDER (Mac) -->
+<section class="screen" id="sender" hidden>
+  <h2>Mac: share your screen</h2>
+  <button id="share">Choose a screen or window to share</button>
+  <div id="codeBox" hidden>
+    <div class="card">
+      <div class="status">Enter this code on the iPhone</div>
+      <div class="code" id="code">······</div>
+      <div class="status">or open this link on the iPhone:</div>
+      <div class="link" id="link"></div>
+    </div>
+  </div>
+  <div id="allowBox" class="card" hidden>
+    <div id="allowMsg"></div>
+    <button id="allow">Allow</button>
+    <button id="deny" class="alt">Deny</button>
+  </div>
+  <div class="status" id="sStatus"></div>
+  <video id="preview" class="preview" playsinline muted autoplay hidden></video>
+  <p style="font-size:13px">Tips: share a whole screen (or a second/virtual display) rather than a window, and keep this tab open. In Chrome you can crank the capture to 60fps; Safari works too.</p>
+  <button class="alt small" data-back>← Back</button>
+</section>
+
+<!-- VIEWER (iPhone) -->
+<section class="screen" id="viewer" hidden>
+  <h2>iPhone: headset viewer</h2>
+  <p>Enter the code from your Mac, or leave it blank to test camera passthrough on its own. Then tap Start, rotate to landscape and drop it in the headset.</p>
+  <input type="text" id="codeIn" placeholder="code" maxlength="6" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button id="start">Start</button>
+  <button id="openSettings" class="alt">⚙️ Settings</button>
+  <div class="card" style="font-size:14px; color:var(--dim)">
+    <b style="color:var(--fg)">In the headset</b><br>
+    Tap the screen (or the headset button, if it taps) → recenter.<br>
+    Two-finger tap → settings (pull the phone out to use sliders).<br>
+    For true fullscreen: Share → <i>Add to Home Screen</i>, then open it from there.
+  </div>
+  <button class="alt small" data-back>← Back</button>
+</section>
+
+<!-- STAGE -->
+<section id="stage" hidden>
+  <canvas id="gl"></canvas>
+  <div id="rotate">Rotate your phone to landscape</div>
+</section>
+<div id="toast"></div>
+<video id="camV" class="vid" playsinline muted autoplay></video>
+<video id="scrV" class="vid" playsinline muted autoplay></video>
+
+<!-- SETTINGS PANEL -->
+<div id="settings" hidden>
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px">
+    <b>Settings</b>
+    <span><button class="alt small" id="resetS">Reset</button> <button class="small" id="closeS">Done</button></span>
+  </div>
+  <div id="sliders"></div>
+  <label class="check"><input type="checkbox" id="chkLock"> Pin screen to my head (ignore gyro)</label>
+  <label class="check"><input type="checkbox" id="chkFlip"> Flip camera 180° (if passthrough is upside down)</label>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const PREFIX = 'cdesk-';
+
+/* ------------------------------------------------------------------ UI */
+function showScreen(id) {
+  for (const s of document.querySelectorAll('.screen')) s.hidden = (s.id !== id);
+}
+let toastTimer;
+function toast(msg, ms = 2600) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), ms);
+}
+$('btnSender').onclick = () => showScreen('sender');
+$('btnViewer').onclick = () => showScreen('viewer');
+document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => location.reload());
+
+/* ------------------------------------------------------------ settings */
+const DEFAULTS = { fov:0.75, k1:0.34, k2:0.55, ipd:0.060, dist:1.6, width:1.6, camFov:68, camOp:1, scrOp:1, lock:false, flip:false };
+const SLIDERS = [
+  ['fov',    'Headset field of view (bigger = wider)', 0.4, 1.4, 0.01],
+  ['k1',     'Lens correction k1', 0, 1, 0.01],
+  ['k2',     'Lens correction k2', 0, 1, 0.01],
+  ['ipd',    'Eye separation (m)', 0, 0.08, 0.001],
+  ['dist',   'Screen distance (m)', 0.5, 4, 0.05],
+  ['width',  'Screen width (m)', 0.5, 4, 0.05],
+  ['camFov', 'iPhone camera field of view (°)', 40, 110, 1],
+  ['camOp',  'Passthrough brightness', 0, 1, 0.05],
+  ['scrOp',  'Mac screen opacity', 0.1, 1, 0.05],
+];
+let S = Object.assign({}, DEFAULTS);
+try { Object.assign(S, JSON.parse(localStorage.getItem('cdesk') || '{}')); } catch (e) {}
+const saveS = () => { try { localStorage.setItem('cdesk', JSON.stringify(S)); } catch (e) {} };
+
+function buildPanel() {
+  const box = $('sliders'); box.innerHTML = '';
+  for (const [k, label, min, max, step] of SLIDERS) {
+    const row = document.createElement('label'); row.className = 'row';
+    row.innerHTML = `<span>${label}</span><output></output><input type="range" min="${min}" max="${max}" step="${step}">`;
+    const inp = row.querySelector('input'), out = row.querySelector('output');
+    inp.value = S[k]; out.textContent = S[k];
+    inp.oninput = () => { S[k] = +inp.value; out.textContent = S[k]; saveS(); };
+    box.appendChild(row);
+  }
+  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip;
+}
+$('chkLock').onchange = e => { S.lock = e.target.checked; saveS(); };
+$('chkFlip').onchange = e => { S.flip = e.target.checked; saveS(); };
+$('resetS').onclick = () => { S = Object.assign({}, DEFAULTS); saveS(); buildPanel(); };
+$('closeS').onclick = () => { $('settings').hidden = true; };
+$('openSettings').onclick = () => { $('settings').hidden = false; };
+buildPanel();
+
+/* -------------------------------------------------------------- sender */
+const CODE_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';
+const randomCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => CODE_CHARS[b % CODE_CHARS.length]).join('');
+let senderStream = null, senderPeer = null, pendingConn = null;
+
+$('share').onclick = async () => {
+  try {
+    senderStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60 }, cursor: 'always' }, audio: false });
+  } catch (e) { $('sStatus').textContent = 'Screen share cancelled: ' + e.message; return; }
+  const vt = senderStream.getVideoTracks()[0];
+  try { vt.contentHint = 'detail'; } catch (e) {}
+  vt.onended = () => { $('sStatus').textContent = 'Screen sharing stopped.'; };
+  const pv = $('preview'); pv.srcObject = senderStream; pv.hidden = false;
+  startSenderPeer();
+};
+
+function startSenderPeer() {
+  const code = randomCode();
+  const peer = new Peer(PREFIX + code);
+  senderPeer = peer;
+  peer.on('open', () => {
+    $('code').textContent = code;
+    $('link').textContent = location.href.split('#')[0] + '#' + code;
+    $('codeBox').hidden = false; $('share').hidden = true;
+    $('sStatus').textContent = 'Waiting for your headset…';
+  });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') { peer.destroy(); startSenderPeer(); }
+    else $('sStatus').textContent = 'Connection error: ' + e.type;
+  });
+  peer.on('connection', conn => {
+    pendingConn = conn;
+    $('allowMsg').textContent = 'A headset wants to see your screen. Is that you?';
+    $('allowBox').hidden = false;
+  });
+}
+$('deny').onclick = () => { if (pendingConn) pendingConn.close(); pendingConn = null; $('allowBox').hidden = true; };
+$('allow').onclick = () => {
+  if (!pendingConn || !senderStream) return;
+  $('allowBox').hidden = true;
+  const call = senderPeer.call(pendingConn.peer, senderStream);
+  $('sStatus').textContent = 'Headset connected. Streaming…';
+  const tune = async () => {
+    try {
+      const s = call.peerConnection.getSenders().find(x => x.track && x.track.kind === 'video');
+      const p = s.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = 20e6;
+      p.encodings[0].maxFramerate = 60;
+      p.degradationPreference = 'maintain-resolution';
+      await s.setParameters(p);
+    } catch (e) {}
+  };
+  setTimeout(tune, 600); setTimeout(tune, 3000);
+  call.on('close', () => { $('sStatus').textContent = 'Headset disconnected. Waiting…'; });
+  pendingConn.on('close', () => { $('sStatus').textContent = 'Headset disconnected. Waiting…'; });
+};
+
+/* -------------------------------------------------------------- viewer */
+const camV = $('camV'), scrV = $('scrV');
+let hasCam = false, hasScr = false;
+const pre = location.hash.slice(1).trim().toLowerCase();
+if (pre) { $('codeIn').value = pre.slice(0, 6); showScreen('viewer'); }
+
+$('start').onclick = async () => {
+  const code = $('codeIn').value.trim().toLowerCase();
+  // Motion permission must be requested straight from the tap.
+  let permP = null;
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { permP = DeviceOrientationEvent.requestPermission(); } catch (e) {}
+  }
+  if (permP) { try { const r = await permP; if (r !== 'granted') toast('Motion access denied: head tracking off'); } catch (e) {} }
+  window.addEventListener('deviceorientation', onOrient);
+  $('settings').hidden = true;
+  $('stage').hidden = false;
+  showScreen('none');
+  if (!initGL()) return;
+  toast('Tap = recenter · two-finger tap = settings', 4000);
+  startCamera();
+  requestWake();
+  if (code) connectViewer(code); else toast('Camera-only test (no code entered)', 3500);
+};
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } }, audio: false });
+    camV.srcObject = stream; await camV.play(); hasCam = true;
+  } catch (e) { toast('Camera unavailable: ' + (e.message || e.name), 5000); }
+}
+
+let viewerPeer = null;
+function connectViewer(code) {
+  toast('Connecting to your Mac…', 3000);
+  const peer = new Peer();
+  viewerPeer = peer;
+  peer.on('open', () => {
+    const conn = peer.connect(PREFIX + code, { reliable: true });
+    conn.on('open', () => toast('Waiting for the Mac to approve…', 4000));
+    conn.on('close', () => { hasScr = false; toast('Mac disconnected'); });
+    conn.on('error', () => toast('Could not reach the Mac'));
+  });
+  peer.on('call', call => {
+    call.answer();
+    call.on('stream', stream => {
+      scrV.srcObject = stream; scrV.play().catch(() => {});
+      const vt = stream.getVideoTracks()[0];
+      if (vt) vt.onended = () => { hasScr = false; };
+      hasScr = true; toast('Mac screen connected ✓');
+      try { call.peerConnection.getReceivers().forEach(r => { if ('playoutDelayHint' in r) r.playoutDelayHint = 0; }); } catch (e) {}
+      try { call.peerConnection.getReceivers().forEach(r => { if ('jitterBufferTarget' in r) r.jitterBufferTarget = 0; }); } catch (e) {}
+    });
+    call.on('close', () => { hasScr = false; toast('Mac stream ended'); });
+  });
+  peer.on('error', e => toast(e.type === 'peer-unavailable' ? 'No Mac found with that code' : 'Connection error: ' + e.type, 5000));
+}
+
+let wake = null;
+async function requestWake() { try { wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !$('stage').hidden) requestWake(); });
+
+/* ------------------------------------------------------ head tracking */
+const I3 = [[1,0,0],[0,1,0],[0,0,1]];
+const mmul = (a, b) => a.map((_, i) => [0,1,2].map(j => a[i][0]*b[0][j] + a[i][1]*b[1][j] + a[i][2]*b[2][j]));
+const qmul = (a, b) => [
+  a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+  a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+  a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+  a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2]];
+function qToMat([x, y, z, w]) {
+  const xx=x*x, yy=y*y, zz=z*z, xy=x*y, xz=x*z, yz=y*z, wx=w*x, wy=w*y, wz=w*z;
+  return [[1-2*(yy+zz), 2*(xy-wz), 2*(xz+wy)],
+          [2*(xy+wz), 1-2*(xx+zz), 2*(yz-wx)],
+          [2*(xz-wy), 2*(yz+wx), 1-2*(xx+yy)]];
+}
+function orientToMatrix(alpha, beta, gamma, screenAngle) {
+  const d = Math.PI / 180;
+  const x = beta*d, y = alpha*d, z = -gamma*d;            // Euler 'YXZ'
+  const c1=Math.cos(x/2), c2=Math.cos(y/2), c3=Math.cos(z/2);
+  const s1=Math.sin(x/2), s2=Math.sin(y/2), s3=Math.sin(z/2);
+  let q = [s1*c2*c3 + c1*s2*s3, c1*s2*c3 - s1*c2*s3, c1*c2*s3 - s1*s2*c3, c1*c2*c3 + s1*s2*s3];
+  q = qmul(q, [-Math.SQRT1_2, 0, 0, Math.SQRT1_2]);       // camera looks out the back of the phone
+  const h = -screenAngle * d / 2;
+  q = qmul(q, [0, 0, Math.sin(h), Math.cos(h)]);          // compensate screen rotation
+  return qToMat(q);
+}
+let rawR = I3, fixR = I3, needRecenter = true, sensor = false;
+function recenter() {
+  const th = Math.atan2(rawR[0][2], rawR[2][2]);
+  const c = Math.cos(th), s = Math.sin(th);
+  fixR = [[c, 0, -s], [0, 1, 0], [s, 0, c]];
+}
+function onOrient(e) {
+  if (e.beta == null) return;
+  sensor = true;
+  const ang = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+  rawR = orientToMatrix(e.alpha || 0, e.beta, e.gamma || 0, ang);
+  if (needRecenter) { recenter(); needRecenter = false; }
+}
+// Desktop fallback so you can test on the Mac: drag to look around.
+let mYaw = 0, mPitch = 0, drag = null;
+function mouseR() {
+  const cy = Math.cos(mYaw), sy = Math.sin(mYaw), cp = Math.cos(mPitch), sp = Math.sin(mPitch);
+  return mmul([[cy,0,sy],[0,1,0],[-sy,0,cy]], [[1,0,0],[0,cp,-sp],[0,sp,cp]]);
+}
+
+/* ------------------------------------------------------------- WebGL */
+const VS = `attribute vec2 aPos; varying vec2 vUv;
+void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
+const FS = `precision highp float;
+varying vec2 vUv;
+uniform sampler2D uCam, uScr;
+uniform mat3 uRot;
+uniform float uEye, uEyeAspect, uTan, uIpd, uDist, uWidth, uScrAspect;
+uniform float uCamOp, uScrOp, uHasCam, uHasScr, uCamFlip;
+uniform vec2 uK, uCamTan;
+void main(){
+  // Eye-local lens coordinates, then inverse lens distortion.
+  vec2 p = (vUv - 0.5) * 2.0;
+  p.x *= uEyeAspect;
+  float r2 = dot(p, p);
+  vec2 q = p * (1.0 + uK.x*r2 + uK.y*r2*r2);
+  vec3 dl = normalize(vec3(q * uTan, -1.0));   // view ray in headset space
+  vec3 dir = uRot * dl;                          // ... in world space
+
+  // Passthrough: head-locked camera image mapped by angle.
+  vec3 col = vec3(0.0);
+  vec2 c = dl.xy / (-dl.z) / uCamTan;
+  if (uCamFlip > 0.5) c = -c;
+  vec2 cuv = vec2(c.x*0.5 + 0.5, 0.5 - c.y*0.5);
+  vec3 camC = texture2D(uCam, clamp(cuv, 0.0, 1.0)).rgb;
+  float camIn = step(0.0, cuv.x) * step(cuv.x, 1.0) * step(0.0, cuv.y) * step(cuv.y, 1.0);
+  col = camC * camIn * uCamOp * uHasCam;
+
+  // Mac screen: a flat quad floating in the world, seen with real stereo parallax.
+  vec3 o = uRot * vec3(uEye * uIpd * 0.5, 0.0, 0.0);
+  float t = (-uDist - o.z) / min(dir.z, -0.0001);
+  vec3 h = o + dir * t;
+  vec2 s = vec2(h.x / uWidth + 0.5, h.y / (uWidth / uScrAspect) + 0.5);
+  vec3 sc = texture2D(uScr, vec2(clamp(s.x,0.0,1.0), clamp(1.0 - s.y, 0.0, 1.0))).rgb;
+  float inside = step(0.0, s.x) * step(s.x, 1.0) * step(0.0, s.y) * step(s.y, 1.0) * step(0.0, t) * uHasScr;
+  float edge = step(-0.004, s.x) * step(s.x, 1.004) * step(-0.004, s.y) * step(s.y, 1.004) * step(0.0, t) * uHasScr;
+  col = mix(col, vec3(0.55, 0.62, 0.72), (edge - inside) * 0.9);
+  col = mix(col, sc, inside * uScrOp);
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+let gl, prog, U = {}, texCam, texScr, glCanvas, camNew = true, scrNew = true;
+const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+
+function initGL() {
+  glCanvas = $('gl');
+  gl = glCanvas.getContext('webgl', { antialias: false, alpha: false, powerPreference: 'high-performance', desynchronized: true });
+  if (!gl) { toast('WebGL is not available on this device', 6000); return false; }
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  } catch (e) { toast('Shader error: ' + e.message, 8000); return false; }
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'aPos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan'])
+    U[n] = gl.getUniformLocation(prog, n);
+  const mk = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255])); return t; };
+  texCam = mk(0); texScr = mk(1);
+  gl.uniform1i(U.uCam, 0); gl.uniform1i(U.uScr, 1);
+  if (hasRVFC) {
+    const w = (v, set) => { const cb = () => { set(); v.requestVideoFrameCallback(cb); }; v.requestVideoFrameCallback(cb); };
+    w(camV, () => camNew = true); w(scrV, () => scrNew = true);
+  }
+  const resize = () => { const d = Math.min(window.devicePixelRatio || 1, 2);
+    glCanvas.width = Math.round(innerWidth * d); glCanvas.height = Math.round(innerHeight * d); };
+  addEventListener('resize', resize); addEventListener('orientationchange', () => setTimeout(resize, 200)); resize();
+
+  // Input: tap recenters, two-finger tap opens settings, drag looks around when there's no gyro.
+  const st = $('stage');
+  st.addEventListener('touchstart', e => { if (e.touches.length >= 2) { $('settings').hidden = false; e.preventDefault(); } }, { passive: false });
+  st.addEventListener('click', () => { if (!$('settings').hidden) return; recenter(); if (!sensor) { mYaw = 0; mPitch = 0; rawR = mouseR(); } toast('Recentered', 1200); });
+  glCanvas.addEventListener('pointerdown', e => { if (!sensor) drag = [e.clientX, e.clientY]; });
+  addEventListener('pointerup', () => { drag = null; });
+  addEventListener('pointermove', e => { if (!drag || sensor) return;
+    mYaw -= (e.clientX - drag[0]) * 0.005; mPitch = Math.max(-1.4, Math.min(1.4, mPitch - (e.clientY - drag[1]) * 0.005));
+    drag = [e.clientX, e.clientY]; rawR = mouseR(); });
+
+  requestAnimationFrame(frame);
+  return true;
+}
+
+function upload(tex, unit, video) {
+  gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+}
+
+function frame() {
+  requestAnimationFrame(frame);
+  const W = glCanvas.width, H = glCanvas.height;
+  const camOK = hasCam && camV.readyState >= 2 && camV.videoWidth > 0;
+  const scrOK = hasScr && scrV.readyState >= 2 && scrV.videoWidth > 0;
+  if (camOK && (camNew || !hasRVFC)) { upload(texCam, 0, camV); camNew = false; }
+  if (scrOK && (scrNew || !hasRVFC)) { upload(texScr, 1, scrV); scrNew = false; }
+
+  const R = S.lock ? I3 : mmul(fixR, rawR);
+  gl.uniformMatrix3fv(U.uRot, false, new Float32Array([R[0][0],R[1][0],R[2][0], R[0][1],R[1][1],R[2][1], R[0][2],R[1][2],R[2][2]]));
+  gl.uniform1f(U.uEyeAspect, (W / 2) / H);
+  gl.uniform1f(U.uTan, S.fov);
+  gl.uniform2f(U.uK, S.k1, S.k2);
+  gl.uniform1f(U.uIpd, S.ipd); gl.uniform1f(U.uDist, S.dist); gl.uniform1f(U.uWidth, S.width);
+  gl.uniform1f(U.uScrAspect, scrOK ? scrV.videoWidth / scrV.videoHeight : 16 / 10);
+  gl.uniform1f(U.uCamOp, S.camOp); gl.uniform1f(U.uScrOp, S.scrOp);
+  gl.uniform1f(U.uHasCam, camOK ? 1 : 0); gl.uniform1f(U.uHasScr, scrOK ? 1 : 0);
+  gl.uniform1f(U.uCamFlip, S.flip ? 1 : 0);
+  // Camera FOV is measured along the long side of the video.
+  const ca = camOK ? camV.videoWidth / camV.videoHeight : 16 / 9;
+  const tl = Math.tan(S.camFov * Math.PI / 360);
+  gl.uniform2f(U.uCamTan, ca >= 1 ? tl : tl * ca, ca >= 1 ? tl / ca : tl);
+
+  const hw = Math.floor(W / 2);
+  gl.uniform1f(U.uEye, -1); gl.viewport(0, 0, hw, H); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.uniform1f(U.uEye, 1);  gl.viewport(hw, 0, W - hw, H); gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+})();
+</script>
+</body>
+</html>
