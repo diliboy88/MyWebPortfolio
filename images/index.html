@@ -27,21 +27,23 @@
   .status { color:var(--dim); font-size:14px; min-height:20px; }
   .link { font:13px ui-monospace, Menlo, monospace; word-break:break-all; color:var(--dim); user-select:all; -webkit-user-select:all; }
   video.preview { width:100%; border-radius:10px; background:#000; margin-top:10px; }
-  label.row { display:grid; grid-template-columns: 1fr 52px; gap:2px 10px; align-items:center; margin:10px 0; font-size:14px; }
-  label.row input[type=range] { grid-column:1 / -1; width:100%; }
+  label.row { display:grid; grid-template-columns: 1fr 60px; gap:4px 10px; align-items:center; margin:18px 0; font-size:17px; }
+  label.row input[type=range] { grid-column:1 / -1; width:100%; height:40px; accent-color:var(--acc); }
   label.row output { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
-  label.check { display:flex; gap:10px; align-items:center; margin:10px 0; font-size:14px; }
+  label.check { display:flex; gap:12px; align-items:center; margin:16px 0; font-size:17px; }
+  label.check input { width:24px; height:24px; }
 
   #stage { position:fixed; inset:0; background:#000; z-index:10; }
   #stage[hidden] { display:none; }
   #gl { width:100%; height:100%; display:block; touch-action:none; }
   #toast { position:fixed; left:50%; top:14px; transform:translateX(-50%); background:rgba(0,0,0,.7); color:#fff; padding:8px 14px; border-radius:20px; font-size:14px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:30; text-align:center; max-width:90vw; }
   #toast.on { opacity:1; }
+  #hud { position:fixed; left:8px; top:8px; z-index:35; font:11px/1.3 ui-monospace, Menlo, monospace; color:#9fe; background:rgba(0,0,0,.55); padding:4px 8px; border-radius:8px; pointer-events:none; max-width:70vw; }
   #rotate { position:absolute; inset:0; display:none; align-items:center; justify-content:center; text-align:center; background:#000; color:#fff; font-size:20px; padding:30px; z-index:5; }
   @media (orientation: portrait) { #rotate { display:flex; } }
   #settings { position:fixed; left:0; right:0; bottom:0; max-height:75vh; overflow:auto; background:rgba(14,16,20,.95); border-top:1px solid var(--line); border-radius:18px 18px 0 0; padding:14px 20px max(20px, env(safe-area-inset-bottom)); z-index:40; }
   #settings[hidden] { display:none; }
-  .vid { position:fixed; left:0; top:0; width:2px; height:2px; opacity:.01; pointer-events:none; }
+  .vid { position:fixed; left:0; top:0; width:64px; height:36px; opacity:.01; pointer-events:none; }
 </style>
 </head>
 <body>
@@ -59,6 +61,7 @@
 <section class="screen" id="sender" hidden>
   <h2>Mac: share your screen</h2>
   <button id="share">Choose a screen or window to share</button>
+  <label class="check"><input type="checkbox" id="autoAllow" checked> Auto-approve the first headset that connects</label>
   <div id="codeBox" hidden>
     <div class="card">
       <div class="status">Enter this code on the iPhone</div>
@@ -100,6 +103,7 @@
   <div id="rotate">Rotate your phone to landscape</div>
 </section>
 <div id="toast"></div>
+<div id="hud" hidden></div>
 <video id="camV" class="vid" playsinline muted autoplay></video>
 <video id="scrV" class="vid" playsinline muted autoplay></video>
 
@@ -112,6 +116,7 @@
   <div id="sliders"></div>
   <label class="check"><input type="checkbox" id="chkLock"> Pin screen to my head (ignore gyro)</label>
   <label class="check"><input type="checkbox" id="chkFlip"> Flip camera 180° (if passthrough is upside down)</label>
+  <label class="check"><input type="checkbox" id="chkHud"> Show status text (top-left)</label>
 </div>
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -135,21 +140,21 @@ $('btnViewer').onclick = () => showScreen('viewer');
 document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => location.reload());
 
 /* ------------------------------------------------------------ settings */
-const DEFAULTS = { fov:0.75, k1:0.34, k2:0.55, ipd:0.060, dist:1.6, width:1.6, camFov:68, camOp:1, scrOp:1, lock:false, flip:false };
+const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true };
 const SLIDERS = [
-  ['fov',    'Headset field of view (bigger = wider)', 0.4, 1.4, 0.01],
+  ['fov',    'Zoom (lower = bigger picture)', 0.25, 1.2, 0.01],
   ['k1',     'Lens correction k1', 0, 1, 0.01],
   ['k2',     'Lens correction k2', 0, 1, 0.01],
   ['ipd',    'Eye separation (m)', 0, 0.08, 0.001],
   ['dist',   'Screen distance (m)', 0.5, 4, 0.05],
-  ['width',  'Screen width (m)', 0.5, 4, 0.05],
+  ['width',  'Screen width (m)', 0.5, 8, 0.1],
   ['camFov', 'iPhone camera field of view (°)', 40, 110, 1],
   ['camOp',  'Passthrough brightness', 0, 1, 0.05],
   ['scrOp',  'Mac screen opacity', 0.1, 1, 0.05],
 ];
 let S = Object.assign({}, DEFAULTS);
-try { Object.assign(S, JSON.parse(localStorage.getItem('cdesk') || '{}')); } catch (e) {}
-const saveS = () => { try { localStorage.setItem('cdesk', JSON.stringify(S)); } catch (e) {} };
+try { Object.assign(S, JSON.parse(localStorage.getItem('cdesk2') || '{}')); } catch (e) {}
+const saveS = () => { try { localStorage.setItem('cdesk2', JSON.stringify(S)); } catch (e) {} };
 
 function buildPanel() {
   const box = $('sliders'); box.innerHTML = '';
@@ -161,10 +166,11 @@ function buildPanel() {
     inp.oninput = () => { S[k] = +inp.value; out.textContent = S[k]; saveS(); };
     box.appendChild(row);
   }
-  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip;
+  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip; $('chkHud').checked = S.hud;
 }
 $('chkLock').onchange = e => { S.lock = e.target.checked; saveS(); };
 $('chkFlip').onchange = e => { S.flip = e.target.checked; saveS(); };
+$('chkHud').onchange = e => { S.hud = e.target.checked; saveS(); };
 $('resetS').onclick = () => { S = Object.assign({}, DEFAULTS); saveS(); buildPanel(); };
 $('closeS').onclick = () => { $('settings').hidden = true; };
 $('openSettings').onclick = () => { $('settings').hidden = false; };
@@ -202,13 +208,17 @@ function startSenderPeer() {
   });
   peer.on('connection', conn => {
     pendingConn = conn;
+    if ($('autoAllow').checked && !approvedOnce) { approve(); return; }
     $('allowMsg').textContent = 'A headset wants to see your screen. Is that you?';
     $('allowBox').hidden = false;
+    $('allowBox').scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 }
 $('deny').onclick = () => { if (pendingConn) pendingConn.close(); pendingConn = null; $('allowBox').hidden = true; };
-$('allow').onclick = () => {
+let approvedOnce = false;
+function approve() {
   if (!pendingConn || !senderStream) return;
+  approvedOnce = true;
   $('allowBox').hidden = true;
   const call = senderPeer.call(pendingConn.peer, senderStream);
   $('sStatus').textContent = 'Headset connected. Streaming…';
@@ -219,6 +229,8 @@ $('allow').onclick = () => {
       if (!p.encodings || !p.encodings.length) p.encodings = [{}];
       p.encodings[0].maxBitrate = 20e6;
       p.encodings[0].maxFramerate = 60;
+      const w = (senderStream.getVideoTracks()[0].getSettings() || {}).width || 0;
+      if (w > 2048) p.encodings[0].scaleResolutionDownBy = w / 2048;   // keep decode/upload light on the phone
       p.degradationPreference = 'maintain-resolution';
       await s.setParameters(p);
     } catch (e) {}
@@ -226,11 +238,13 @@ $('allow').onclick = () => {
   setTimeout(tune, 600); setTimeout(tune, 3000);
   call.on('close', () => { $('sStatus').textContent = 'Headset disconnected. Waiting…'; });
   pendingConn.on('close', () => { $('sStatus').textContent = 'Headset disconnected. Waiting…'; });
-};
+}
+$('allow').onclick = approve;
 
 /* -------------------------------------------------------------- viewer */
 const camV = $('camV'), scrV = $('scrV');
 let hasCam = false, hasScr = false;
+let macState = 'not started', linkState = '';
 const pre = location.hash.slice(1).trim().toLowerCase();
 if (pre) { $('codeIn').value = pre.slice(0, 6); showScreen('viewer'); }
 
@@ -247,10 +261,11 @@ $('start').onclick = async () => {
   $('stage').hidden = false;
   showScreen('none');
   if (!initGL()) return;
-  toast('Tap = recenter · two-finger tap = settings', 4000);
+  toast('Get in the headset and look straight ahead: recentering in 6s', 5500);
+  setTimeout(() => { recenter(); toast('Recentered (tap = recenter again, two-finger tap = settings)', 3500); }, 6000);
   startCamera();
   requestWake();
-  if (code) connectViewer(code); else toast('Camera-only test (no code entered)', 3500);
+  if (code) connectViewer(code); else { macState = 'no code (camera test)'; toast('Camera-only test (no code entered)', 3500); }
 };
 
 async function startCamera() {
@@ -263,28 +278,31 @@ async function startCamera() {
 
 let viewerPeer = null;
 function connectViewer(code) {
-  toast('Connecting to your Mac…', 3000);
+  macState = 'connecting…'; toast('Connecting to your Mac…', 3000);
   const peer = new Peer();
   viewerPeer = peer;
   peer.on('open', () => {
+    macState = 'reaching Mac…';
     const conn = peer.connect(PREFIX + code, { reliable: true });
-    conn.on('open', () => toast('Waiting for the Mac to approve…', 4000));
-    conn.on('close', () => { hasScr = false; toast('Mac disconnected'); });
+    conn.on('open', () => { macState = 'waiting for Mac to approve'; toast('Waiting for the Mac to approve…', 4000); });
+    conn.on('close', () => { hasScr = false; macState = 'disconnected'; toast('Mac disconnected'); });
     conn.on('error', () => toast('Could not reach the Mac'));
   });
   peer.on('call', call => {
     call.answer();
+    macState = 'call received';
+    try { call.peerConnection.addEventListener('iceconnectionstatechange', () => { linkState = call.peerConnection.iceConnectionState; }); } catch (e) {}
     call.on('stream', stream => {
       scrV.srcObject = stream; scrV.play().catch(() => {});
       const vt = stream.getVideoTracks()[0];
       if (vt) vt.onended = () => { hasScr = false; };
-      hasScr = true; toast('Mac screen connected ✓');
+      hasScr = true; macState = 'stream received'; toast('Mac screen connected ✓');
       try { call.peerConnection.getReceivers().forEach(r => { if ('playoutDelayHint' in r) r.playoutDelayHint = 0; }); } catch (e) {}
       try { call.peerConnection.getReceivers().forEach(r => { if ('jitterBufferTarget' in r) r.jitterBufferTarget = 0; }); } catch (e) {}
     });
     call.on('close', () => { hasScr = false; toast('Mac stream ended'); });
   });
-  peer.on('error', e => toast(e.type === 'peer-unavailable' ? 'No Mac found with that code' : 'Connection error: ' + e.type, 5000));
+  peer.on('error', e => { macState = 'error: ' + e.type; toast(e.type === 'peer-unavailable' ? 'No Mac found with that code' : 'Connection error: ' + e.type, 5000); });
 }
 
 let wake = null;
@@ -318,9 +336,11 @@ function orientToMatrix(alpha, beta, gamma, screenAngle) {
 }
 let rawR = I3, fixR = I3, needRecenter = true, sensor = false;
 function recenter() {
+  const fy = -rawR[1][2];
   const th = Math.atan2(rawR[0][2], rawR[2][2]);
-  const c = Math.cos(th), s = Math.sin(th);
-  fixR = [[c, 0, -s], [0, 1, 0], [s, 0, c]];
+  const ph = Math.asin(Math.max(-1, Math.min(1, fy)));
+  const c = Math.cos(th), s = Math.sin(th), cp = Math.cos(ph), sp = Math.sin(ph);
+  fixR = mmul([[1, 0, 0], [0, cp, sp], [0, -sp, cp]], [[c, 0, -s], [0, 1, 0], [s, 0, c]]);
 }
 function onOrient(e) {
   if (e.beta == null) return;
@@ -431,13 +451,24 @@ function upload(tex, unit, video) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
 }
 
+let hudT = 0;
+function updateHud(now, camOK, scrOK) {
+  if (now - hudT < 400) return; hudT = now;
+  const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
+  let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
+  el.textContent = 'cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+    (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data');
+}
+
 function frame() {
   requestAnimationFrame(frame);
   const W = glCanvas.width, H = glCanvas.height;
   const camOK = hasCam && camV.readyState >= 2 && camV.videoWidth > 0;
   const scrOK = hasScr && scrV.readyState >= 2 && scrV.videoWidth > 0;
-  if (camOK && (camNew || !hasRVFC)) { upload(texCam, 0, camV); camNew = false; }
-  if (scrOK && (scrNew || !hasRVFC)) { upload(texScr, 1, scrV); scrNew = false; }
+  if (hasScr && scrV.paused) scrV.play().catch(() => {});
+  if (camOK) upload(texCam, 0, camV);
+  if (scrOK) upload(texScr, 1, scrV);
+  updateHud(performance.now(), camOK, scrOK);
 
   const R = S.lock ? I3 : mmul(fixR, rawR);
   gl.uniformMatrix3fv(U.uRot, false, new Float32Array([R[0][0],R[1][0],R[2][0], R[0][1],R[1][1],R[2][1], R[0][2],R[1][2],R[2][2]]));
