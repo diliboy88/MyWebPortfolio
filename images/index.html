@@ -52,7 +52,7 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v6</small></h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v7</small></h1>
   <div class="status" id="rtcInfo"></div>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
@@ -89,6 +89,19 @@
     <button id="applyAnswer">Connect</button>
     <div class="status" id="mStatus"></div>
   </details>
+  <div class="card" id="remoteCard">
+    <b>Remote settings (live in the headset)</b>
+    <div class="status" id="rStatus">Connect a headset to use these.</div>
+    <button id="rRecenter" class="alt">Recenter headset</button>
+    <button id="rReset" class="alt">Reset headset settings</button>
+    <div id="remoteBox"></div>
+    <details>
+      <summary>Keyboard, gamepad or remote buttons</summary>
+      <p style="font-size:13px">Pick an action, press Assign, then press any key or controller button. A message appears inside the headset as you change things. Arrow keys and R work by default.</p>
+      <div id="bindBox"></div>
+      <div class="status" id="inputLog">Press a button on your remote or keyboard to test it.</div>
+    </details>
+  </div>
   <video id="preview" class="preview" playsinline muted autoplay hidden></video>
   <p style="font-size:13px">Tips for readable text: share a virtual second display set to a LOW resolution such as 1280×720 (apps like DeskPad or BetterDisplay can create one), so everything is drawn big, and keep this tab open. In Chrome you can crank the capture to 60fps; Safari works too.</p>
   <button class="alt small" data-back>← Back</button>
@@ -140,6 +153,7 @@
   <label class="check"><input type="checkbox" id="chkFlip"> Flip camera 180° (if passthrough is upside down)</label>
   <label class="check"><input type="checkbox" id="chkHud"> Show status text (top-left)</label>
   <label class="check"><input type="checkbox" id="chkHand"> Hand control: pinch to grab and move the screen, two hands to resize (experimental)</label>
+  <label class="check"><input type="checkbox" id="chkCalib"> Calibration grid (lines should look straight)</label>
 </div>
 
 <script>
@@ -182,12 +196,12 @@ $('btnViewer').onclick = () => showScreen('viewer');
 document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => location.reload());
 
 /* ------------------------------------------------------------ settings */
-const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true, sharp:0.5, dpr:3, hand:false };
+const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true, sharp:0.5, dpr:3, hand:false, lensX:0, lensY:0, calib:false };
 const SLIDERS = [
   ['fov',    'Zoom (lower = bigger picture)', 0.25, 1.2, 0.01],
   ['k1',     'Lens correction k1', 0, 1, 0.01],
   ['k2',     'Lens correction k2', 0, 1, 0.01],
-  ['ipd',    'Eye separation (m)', 0, 0.08, 0.001],
+  ['ipd',    'Eye separation for screen depth (m)', 0, 0.08, 0.001],
   ['dist',   'Screen distance (m)', 0.5, 4, 0.05],
   ['width',  'Screen width (m)', 0.5, 8, 0.1],
   ['camFov', 'iPhone camera field of view (°)', 40, 110, 1],
@@ -195,10 +209,12 @@ const SLIDERS = [
   ['scrOp',  'Mac screen opacity', 0.1, 1, 0.05],
   ['sharp',  'Text sharpening', 0, 1.5, 0.05],
   ['dpr',    'Render resolution (lower = faster)', 1, 3, 0.25],
+  ['lensX',  'Image centers: closer together (+) / apart (-)', -0.4, 0.4, 0.005],
+  ['lensY',  'Image height (up +)', -0.3, 0.3, 0.005],
 ];
 let S = Object.assign({}, DEFAULTS);
 try { Object.assign(S, JSON.parse(localStorage.getItem('cdesk2') || '{}')); } catch (e) {}
-const saveS = () => { try { localStorage.setItem('cdesk2', JSON.stringify(S)); } catch (e) {} };
+const saveS = () => { try { localStorage.setItem('cdesk2', JSON.stringify(S)); } catch (e) {} phoneSend({ t: 'state', S }); };
 
 function buildPanel() {
   const box = $('sliders'); box.innerHTML = '';
@@ -210,12 +226,13 @@ function buildPanel() {
     inp.oninput = () => { S[k] = +inp.value; out.textContent = S[k]; saveS(); };
     box.appendChild(row);
   }
-  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip; $('chkHud').checked = S.hud; $('chkHand').checked = S.hand;
+  $('chkLock').checked = S.lock; $('chkFlip').checked = S.flip; $('chkHud').checked = S.hud; $('chkHand').checked = S.hand; $('chkCalib').checked = S.calib;
 }
 $('chkLock').onchange = e => { S.lock = e.target.checked; saveS(); };
 $('chkFlip').onchange = e => { S.flip = e.target.checked; saveS(); };
 $('chkHud').onchange = e => { S.hud = e.target.checked; saveS(); };
 $('chkHand').onchange = e => { S.hand = e.target.checked; saveS(); if (S.hand) loadHands(); };
+$('chkCalib').onchange = e => { S.calib = e.target.checked; saveS(); };
 $('resetS').onclick = () => { S = Object.assign({}, DEFAULTS); saveS(); buildPanel(); };
 $('closeS').onclick = () => { $('settings').hidden = true; };
 $('openSettings').onclick = () => { buildPanel(); $('settings').hidden = false; };
@@ -254,6 +271,8 @@ function startSenderPeer() {
   peer.on('disconnected', () => { $('sStatus').textContent = 'Lost the handshake server, reconnecting…'; try { peer.reconnect(); } catch (e) {} });
   peer.on('connection', conn => {
     pendingConn = conn;
+    conn.on('data', onMacMsg);
+    conn.on('open', () => { $('rStatus').textContent = 'Headset linked. Changes apply live.'; });
     $('sStatus').textContent = 'Headset found, connecting…';
     if ($('autoAllow').checked && !approvedOnce) { approve(); return; }
     $('allowMsg').textContent = 'A headset wants to see your screen. Is that you?';
@@ -352,6 +371,9 @@ $('mkOffer').onclick = async () => {
   try {
     if (mpc) mpc.close();
     const pc = mpc = newPC(ICE);
+    macDC = pc.createDataChannel('ctl');
+    macDC.onmessage = ev => onMacMsg(ev.data);
+    macDC.onopen = () => { $('rStatus').textContent = 'Headset linked. Changes apply live.'; };
     senderStream.getTracks().forEach(t => pc.addTrack(t, senderStream));
     pc.addEventListener('iceconnectionstatechange', () => {
       const st = pc.iceConnectionState;
@@ -383,6 +405,11 @@ $('makeAnswer').onclick = async () => {
     try { (await navigator.mediaDevices.getUserMedia({ video: true })).getTracks().forEach(t => t.stop()); } catch (e) {}
     if (ppc) ppc.close();
     const pc = ppc = newPC(ICE);
+    pc.addEventListener('datachannel', ev => {
+      phoneDC = ev.channel;
+      ev.channel.onmessage = m => onPhoneMsg(m.data);
+      ev.channel.onopen = () => phoneSend({ t: 'state', S });
+    });
     pc.addEventListener('track', ev => {
       scrV.srcObject = ev.streams[0] || new MediaStream([ev.track]);
       scrV.play().catch(() => {});
@@ -400,6 +427,150 @@ $('makeAnswer').onclick = async () => {
   } catch (e) { $('pStatus').textContent = 'Error: ' + e.message; }
 };
 $('copyAnswer').onclick = () => copyText($('answerOut'), $('copyAnswer'));
+
+/* ------------------------------------------- live remote control (Mac -> headset) */
+const SHORT = { fov: 'Zoom', k1: 'Lens k1', k2: 'Lens k2', ipd: 'Eye separation', dist: 'Screen distance', width: 'Screen width', camFov: 'Camera FOV', camOp: 'Passthrough', scrOp: 'Screen opacity', sharp: 'Sharpening', dpr: 'Resolution', lensX: 'Image centers', lensY: 'Image height', lock: 'Pinned to head', flip: 'Camera flip', hud: 'Status text', hand: 'Hand control', calib: 'Calibration grid' };
+const fmtVal = v => (typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : (v ? 'on' : 'off'));
+let macDC = null, phoneDC = null, viewerConn = null;
+const parseMsg = d => (typeof d === 'string' ? JSON.parse(d) : d);
+function macSend(m) { try { if (macDC && macDC.readyState === 'open') macDC.send(JSON.stringify(m)); else if (pendingConn && pendingConn.open) pendingConn.send(m); } catch (e) {} }
+function phoneSend(m) { try { if (phoneDC && phoneDC.readyState === 'open') phoneDC.send(JSON.stringify(m)); else if (viewerConn && viewerConn.open) viewerConn.send(m); } catch (e) {} }
+
+// Headset side: a short message strip drawn into a texture, shown in front of you.
+const hudC = document.createElement('canvas'); hudC.width = 512; hudC.height = 96;
+let hudUntil = 0, hudDirty = false;
+function say(text) {
+  const g = hudC.getContext('2d');
+  g.clearRect(0, 0, 512, 96); g.fillStyle = 'rgba(0,0,0,0.7)'; g.fillRect(0, 0, 512, 96);
+  g.fillStyle = '#fff'; g.font = '600 38px -apple-system, system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, 256, 50, 490);
+  hudDirty = true; hudUntil = performance.now() + 2600;
+}
+function onPhoneMsg(d) {
+  let m; try { m = parseMsg(d); } catch (e) { return; }
+  if (!m || typeof m !== 'object') return;
+  if (m.t === 'set' && Object.prototype.hasOwnProperty.call(DEFAULTS, m.k) && typeof m.v === typeof DEFAULTS[m.k]) {
+    S[m.k] = m.v; saveS();
+    say((SHORT[m.k] || m.k) + ': ' + fmtVal(m.v));
+    if (m.k === 'hand' && m.v) loadHands();
+  } else if (m.t === 'recenter') { recenter(); say('Recentered'); }
+  else if (m.t === 'say' && typeof m.text === 'string') say(m.text.slice(0, 40));
+  else if (m.t === 'reset') { S = Object.assign({}, DEFAULTS); saveS(); say('Settings reset'); }
+}
+
+// Mac side: mirrored sliders, key / gamepad bindings.
+const RS = Object.assign({}, DEFAULTS);
+const CHECKS = [['lock', 'Pin screen to head'], ['flip', 'Flip camera 180°'], ['hud', 'Status text on headset'], ['hand', 'Hand control'], ['calib', 'Calibration grid']];
+const remoteUI = {};
+let selKey = SLIDERS[0][0];
+function onMacMsg(d) {
+  let m; try { m = parseMsg(d); } catch (e) { return; }
+  if (m && m.t === 'state' && m.S && typeof m.S === 'object') {
+    Object.assign(RS, m.S); syncRemote();
+    $('rStatus').textContent = 'Headset settings loaded. Changes apply live.';
+  }
+}
+function buildRemote() {
+  const box = $('remoteBox'); box.innerHTML = '';
+  for (const [k, label, min, max, step] of SLIDERS) {
+    const row = document.createElement('label'); row.className = 'row';
+    row.innerHTML = `<span>${label}</span><output></output><input type="range" min="${min}" max="${max}" step="${step}">`;
+    const inp = row.querySelector('input'), out = row.querySelector('output');
+    inp.value = RS[k]; out.textContent = fmtVal(RS[k]);
+    inp.oninput = () => setRemote(k, +inp.value);
+    row.onclick = () => selectRemote(k, false);
+    box.appendChild(row); remoteUI[k] = { row, inp, out, min, max, step };
+  }
+  for (const [k, label] of CHECKS) {
+    const row = document.createElement('label'); row.className = 'check';
+    row.innerHTML = `<input type="checkbox"> ${label}`;
+    const cb = row.querySelector('input'); cb.checked = !!RS[k];
+    cb.onchange = () => setRemote(k, cb.checked);
+    box.appendChild(row); remoteUI[k] = { cb };
+  }
+  selectRemote(selKey, false);
+}
+function setRemote(k, v) { RS[k] = v; syncRemote(); macSend({ t: 'set', k, v }); }
+function syncRemote() {
+  for (const k in remoteUI) {
+    const u = remoteUI[k];
+    if (u.inp) { u.inp.value = RS[k]; u.out.textContent = fmtVal(RS[k]); } else if (u.cb) u.cb.checked = !!RS[k];
+  }
+}
+function selectRemote(k, announce) {
+  selKey = k;
+  for (const q in remoteUI) if (remoteUI[q].row) remoteUI[q].row.style.outline = (q === k) ? '2px solid var(--acc)' : 'none';
+  if (announce) macSend({ t: 'say', text: (SHORT[k] || k) + ': ' + fmtVal(RS[k]) });
+}
+function remoteStep(dir) {
+  const u = remoteUI[selKey]; if (!u || !u.inp) return;
+  setRemote(selKey, +Math.min(u.max, Math.max(u.min, RS[selKey] + dir * u.step * 2)).toFixed(4));
+}
+$('rRecenter').onclick = () => macSend({ t: 'recenter' });
+$('rReset').onclick = () => { macSend({ t: 'reset' }); Object.assign(RS, DEFAULTS); syncRemote(); };
+
+const ACTIONS = [['next', 'Next setting'], ['prev', 'Previous setting'], ['inc', 'Increase'], ['dec', 'Decrease'], ['recenter', 'Recenter headset']];
+const DEFAULT_BINDS = { next: 'k:ArrowDown', prev: 'k:ArrowUp', inc: 'k:ArrowRight', dec: 'k:ArrowLeft', recenter: 'k:KeyR' };
+let bindings = Object.assign({}, DEFAULT_BINDS), learning = null, padNames = [];
+try { Object.assign(bindings, JSON.parse(localStorage.getItem('cdesk-binds') || '{}')); } catch (e) {}
+const prettyId = id => id.startsWith('k:') ? 'Key ' + id.slice(2) : id.startsWith('b:') ? 'Button ' + id.slice(2) : 'Axis ' + id.slice(2);
+function doAction(a) {
+  const keys = SLIDERS.map(s => s[0]), i = keys.indexOf(selKey);
+  if (a === 'next') selectRemote(keys[(i + 1) % keys.length], true);
+  else if (a === 'prev') selectRemote(keys[(i - 1 + keys.length) % keys.length], true);
+  else if (a === 'inc') remoteStep(1);
+  else if (a === 'dec') remoteStep(-1);
+  else if (a === 'recenter') macSend({ t: 'recenter' });
+  const u = remoteUI[selKey]; if (u && u.row && (a === 'next' || a === 'prev')) u.row.scrollIntoView({ block: 'nearest' });
+}
+function onInput(id) {
+  $('inputLog').textContent = 'Last input: ' + prettyId(id) + (padNames.length ? ' | gamepads: ' + padNames.join(', ') : ' | no gamepad detected');
+  if (learning) {
+    bindings[learning] = id; learning = null;
+    try { localStorage.setItem('cdesk-binds', JSON.stringify(bindings)); } catch (e) {}
+    renderBinds(); return;
+  }
+  for (const a in bindings) if (bindings[a] === id) doAction(a);
+}
+function renderBinds() {
+  const box = $('bindBox'); box.innerHTML = '';
+  for (const [act, label] of ACTIONS) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:10px; margin:8px 0; font-size:15px';
+    const span = document.createElement('span'); span.textContent = label + ': ' + (bindings[act] ? prettyId(bindings[act]) : 'none');
+    const b = document.createElement('button'); b.className = 'alt small'; b.textContent = learning === act ? 'Press an input…' : 'Assign';
+    b.onclick = () => { learning = act; renderBinds(); };
+    row.appendChild(span); row.appendChild(b); box.appendChild(row);
+  }
+}
+document.addEventListener('keydown', e => {
+  if ($('sender').hidden) return;
+  const t = e.target;
+  if (t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type === 'text'))) return;
+  const id = 'k:' + e.code;
+  if (learning || Object.values(bindings).includes(id)) e.preventDefault();
+  if (learning && e.repeat) return;
+  onInput(id);
+});
+const held = {};
+function padPress(id, on, now) {
+  const h = held[id];
+  if (on && !h) { held[id] = { t0: now, last: now }; onInput(id); }
+  else if (on && h) { if (now - h.t0 > 350 && now - h.last > 110) { h.last = now; onInput(id); } }
+  else if (!on && h) delete held[id];
+}
+setInterval(() => {
+  if ($('sender').hidden || !navigator.getGamepads) return;
+  const now = performance.now(), names = [];
+  for (const p of navigator.getGamepads()) {
+    if (!p) continue;
+    names.push(p.id.slice(0, 36));
+    p.buttons.forEach((b, i) => padPress('b:' + i, b.pressed, now));
+    p.axes.forEach((a, i) => { padPress('a:' + i + '+', a > 0.6, now); padPress('a:' + i + '-', a < -0.6, now); });
+  }
+  padNames = names;
+}, 50);
+buildRemote(); renderBinds();
 const pre = location.hash.slice(1).trim().toLowerCase();
 if (pre) { $('codeIn').value = pre.slice(0, 6); showScreen('viewer'); }
 
@@ -443,8 +614,9 @@ function connectViewer(code) {
     let linked = false;
     setTimeout(() => { if (!linked) { macState = 'no link to the Mac after 12s (same Wi-Fi? not guest or cellular?)'; toast('Cannot reach the Mac. Check both are on the same Wi-Fi.', 6000); } }, 12000);
     const conn = peer.connect(PREFIX + code, { reliable: true });
+    viewerConn = conn; conn.on('data', onPhoneMsg);
     conn.on('open', () => {
-      linked = true; macState = 'waiting for Mac to approve'; toast('Waiting for the Mac to approve…', 4000);
+      linked = true; macState = 'waiting for Mac to approve'; toast('Waiting for the Mac to approve…', 4000); phoneSend({ t: 'state', S });
       setTimeout(() => { if (!hasScr) macState = 'linked, but no video yet (check the Mac page)'; }, 10000);
     });
     conn.on('close', () => { hasScr = false; macState = 'disconnected'; toast('Mac disconnected'); });
@@ -595,16 +767,18 @@ const VS = `attribute vec2 aPos; varying vec2 vUv;
 void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
 const FS = `precision highp float;
 varying vec2 vUv;
-uniform sampler2D uCam, uScr;
+uniform sampler2D uCam, uScr, uHud;
 uniform mat3 uRot;
 uniform float uEye, uEyeAspect, uTan, uIpd, uDist, uWidth, uScrAspect;
 uniform float uCamOp, uScrOp, uHasCam, uHasScr, uCamFlip;
 uniform vec2 uK, uCamTan, uScrStep;
 uniform vec3 uH0, uH1;
-uniform float uCamAspect, uSharp;
+uniform float uCamAspect, uSharp, uCalib, uHudOp;
+uniform vec2 uLens;
 void main(){
   // Eye-local lens coordinates, then inverse lens distortion.
   vec2 p = (vUv - 0.5) * 2.0;
+  p -= vec2(-uEye * uLens.x, uLens.y);          // move this eye's image centre to match the lens
   p.x *= uEyeAspect;
   float r2 = dot(p, p);
   vec2 q = p * (1.0 + uK.x*r2 + uK.y*r2*r2);
@@ -640,10 +814,22 @@ void main(){
   float a0 = uH0.z > 1.5 ? 1.0 - smoothstep(0.018, 0.026, d0) : (uH0.z > 0.5 ? 1.0 - smoothstep(0.003, 0.006, abs(d0 - 0.035)) : 0.0);
   float a1 = uH1.z > 1.5 ? 1.0 - smoothstep(0.018, 0.026, d1) : (uH1.z > 0.5 ? 1.0 - smoothstep(0.003, 0.006, abs(d1 - 0.035)) : 0.0);
   col = mix(col, vec3(0.25, 1.0, 0.45), clamp(a0 + a1, 0.0, 1.0));
+  // in-headset message strip and calibration grid
+  vec2 tg = dl.xy / (-dl.z);
+  vec2 hq = vec2((tg.x - uEye * 0.008) / 0.8 + 0.5, 1.0 - ((tg.y + 0.40) / 0.15 + 0.5));
+  vec4 hv = texture2D(uHud, clamp(hq, 0.0, 1.0));
+  float hin = step(0.0, hq.x) * step(hq.x, 1.0) * step(0.0, hq.y) * step(hq.y, 1.0);
+  col = mix(col, hv.rgb, hv.a * hin * uHudOp);
+  if (uCalib > 0.5) {
+    vec2 gq = abs(fract(tg * 4.0 + 0.5) - 0.5);
+    float ln = 1.0 - smoothstep(0.01, 0.03, min(gq.x, gq.y));
+    float ax = 1.0 - smoothstep(0.008, 0.02, min(abs(tg.x), abs(tg.y)));
+    col = mix(col, vec3(1.0, 0.85, 0.2), max(ln * 0.6, ax));
+  }
   gl_FragColor = vec4(col, 1.0);
 }`;
 
-let gl, prog, U = {}, texCam, texScr, glCanvas, camNew = true, scrNew = true, isGL2 = false;
+let gl, prog, U = {}, texCam, texScr, glCanvas, camNew = true, scrNew = true, isGL2 = false, texHud = null;
 const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
 function initGL() {
@@ -664,7 +850,7 @@ function initGL() {
   const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'aPos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan','uScrStep','uH0','uH1','uCamAspect','uSharp'])
+  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan','uScrStep','uH0','uH1','uCamAspect','uSharp','uHud','uHudOp','uLens','uCalib'])
     U[n] = gl.getUniformLocation(prog, n);
   const mk = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -675,7 +861,11 @@ function initGL() {
   if (isGL2) { gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); }
   { const an = gl.getExtension('EXT_texture_filter_anisotropic');
     if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT))); }
-  gl.uniform1i(U.uCam, 0); gl.uniform1i(U.uScr, 1);
+  gl.uniform1i(U.uCam, 0); gl.uniform1i(U.uScr, 1); gl.uniform1i(U.uHud, 2);
+  texHud = gl.createTexture(); gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texHud);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
   if (hasRVFC) {
     const w = (v, set) => { const cb = () => { set(); v.requestVideoFrameCallback(cb); }; v.requestVideoFrameCallback(cb); };
     w(camV, () => camNew = true); w(scrV, () => scrNew = true);
@@ -709,7 +899,7 @@ function updateHud(now, camOK, scrOK) {
   if (now - hudT < 400) return; hudT = now;
   const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'v6 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+  el.textContent = 'v7 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
     (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data') + (S.hand ? ' | hands ' + (hl ? 'on' : 'loading') : '');
 }
 
@@ -741,6 +931,10 @@ function frame() {
   const foot = scrOK ? Math.min(3, Math.max(1, scrV.videoWidth * S.fov * 2 * S.dist / (S.width * H))) : 1;
   gl.uniform2f(U.uScrStep, scrOK ? foot / scrV.videoWidth : 0, scrOK ? foot / scrV.videoHeight : 0);
   gl.uniform1f(U.uSharp, S.sharp);
+  gl.uniform2f(U.uLens, S.lensX, S.lensY); gl.uniform1f(U.uCalib, S.calib ? 1 : 0);
+  { const nowMs = performance.now();
+    if (hudDirty && texHud) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texHud); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, hudC); hudDirty = false; }
+    gl.uniform1f(U.uHudOp, Math.max(0, Math.min(1, (hudUntil - nowMs) / 400))); }
   // Camera FOV is measured along the long side of the video.
   const ca = camOK ? camV.videoWidth / camV.videoHeight : 16 / 9;
   const tl = Math.tan(S.camFov * Math.PI / 360);
