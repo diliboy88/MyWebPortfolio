@@ -52,7 +52,7 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v7</small></h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v8</small></h1>
   <div class="status" id="rtcInfo"></div>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
@@ -94,6 +94,7 @@
     <div class="status" id="rStatus">Connect a headset to use these.</div>
     <button id="rRecenter" class="alt">Recenter headset</button>
     <button id="rReset" class="alt">Reset headset settings</button>
+    <button id="rLock">Lock settings &amp; run fast</button>
     <div id="remoteBox"></div>
     <details>
       <summary>Keyboard, gamepad or remote buttons</summary>
@@ -148,6 +149,7 @@
     <b>Settings</b>
     <span><button class="alt small" id="resetS">Reset</button> <button class="small" id="closeS">Done</button></span>
   </div>
+  <button id="lockBtn">Lock settings &amp; run fast</button>
   <div id="sliders"></div>
   <label class="check"><input type="checkbox" id="chkLock"> Pin screen to my head (ignore gyro)</label>
   <label class="check"><input type="checkbox" id="chkFlip"> Flip camera 180° (if passthrough is upside down)</label>
@@ -188,6 +190,7 @@ function showScreen(id) {
 }
 let toastTimer;
 function toast(msg, ms = 2600) {
+  if (runMode) return;
   const t = $('toast'); t.textContent = msg; t.classList.add('on');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), ms);
 }
@@ -432,9 +435,19 @@ $('copyAnswer').onclick = () => copyText($('answerOut'), $('copyAnswer'));
 const SHORT = { fov: 'Zoom', k1: 'Lens k1', k2: 'Lens k2', ipd: 'Eye separation', dist: 'Screen distance', width: 'Screen width', camFov: 'Camera FOV', camOp: 'Passthrough', scrOp: 'Screen opacity', sharp: 'Sharpening', dpr: 'Resolution', lensX: 'Image centers', lensY: 'Image height', lock: 'Pinned to head', flip: 'Camera flip', hud: 'Status text', hand: 'Hand control', calib: 'Calibration grid' };
 const fmtVal = v => (typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : (v ? 'on' : 'off'));
 let macDC = null, phoneDC = null, viewerConn = null;
+let runMode = false, saveT = null;
+const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem('cdesk2', JSON.stringify(S)); } catch (e) {} }, 800); };
+function lockRun() {
+  if (runMode) return;
+  say('Locked: running fast');
+  phoneSend({ t: 'locked', v: true });
+  setTimeout(() => { saveS(); $('settings').hidden = true; hudUntil = 0; runMode = true; }, 1800);
+}
+function leaveRun() { runMode = false; say('Unlocked'); phoneSend({ t: 'locked', v: false }); phoneSend({ t: 'state', S }); }
+$('lockBtn').onclick = () => { $('settings').hidden = true; lockRun(); };
 const parseMsg = d => (typeof d === 'string' ? JSON.parse(d) : d);
 function macSend(m) { try { if (macDC && macDC.readyState === 'open') macDC.send(JSON.stringify(m)); else if (pendingConn && pendingConn.open) pendingConn.send(m); } catch (e) {} }
-function phoneSend(m) { try { if (phoneDC && phoneDC.readyState === 'open') phoneDC.send(JSON.stringify(m)); else if (viewerConn && viewerConn.open) viewerConn.send(m); } catch (e) {} }
+function phoneSend(m) { if (runMode) return; try { if (phoneDC && phoneDC.readyState === 'open') phoneDC.send(JSON.stringify(m)); else if (viewerConn && viewerConn.open) viewerConn.send(m); } catch (e) {} }
 
 // Headset side: a short message strip drawn into a texture, shown in front of you.
 const hudC = document.createElement('canvas'); hudC.width = 512; hudC.height = 96;
@@ -449,8 +462,10 @@ function say(text) {
 function onPhoneMsg(d) {
   let m; try { m = parseMsg(d); } catch (e) { return; }
   if (!m || typeof m !== 'object') return;
+  if (runMode) { if (m.t === 'unlock') leaveRun(); else if (m.t === 'recenter') recenter(); return; }
+  if (m.t === 'lock') { lockRun(); return; }
   if (m.t === 'set' && Object.prototype.hasOwnProperty.call(DEFAULTS, m.k) && typeof m.v === typeof DEFAULTS[m.k]) {
-    S[m.k] = m.v; saveS();
+    S[m.k] = m.v; saveSoon();
     say((SHORT[m.k] || m.k) + ': ' + fmtVal(m.v));
     if (m.k === 'hand' && m.v) loadHands();
   } else if (m.t === 'recenter') { recenter(); say('Recentered'); }
@@ -468,7 +483,7 @@ function onMacMsg(d) {
   if (m && m.t === 'state' && m.S && typeof m.S === 'object') {
     Object.assign(RS, m.S); syncRemote();
     $('rStatus').textContent = 'Headset settings loaded. Changes apply live.';
-  }
+  } else if (m && m.t === 'locked') setLockedUI(!!m.v);
 }
 function buildRemote() {
   const box = $('remoteBox'); box.innerHTML = '';
@@ -490,7 +505,11 @@ function buildRemote() {
   }
   selectRemote(selKey, false);
 }
-function setRemote(k, v) { RS[k] = v; syncRemote(); macSend({ t: 'set', k, v }); }
+const pend = {}; let pendT = null;
+function setRemote(k, v) {
+  RS[k] = v; syncRemote(); pend[k] = v;
+  if (!pendT) pendT = setTimeout(() => { pendT = null; for (const q in pend) { macSend({ t: 'set', k: q, v: pend[q] }); delete pend[q]; } }, 50);
+}
 function syncRemote() {
   for (const k in remoteUI) {
     const u = remoteUI[k];
@@ -508,13 +527,25 @@ function remoteStep(dir) {
 }
 $('rRecenter').onclick = () => macSend({ t: 'recenter' });
 $('rReset').onclick = () => { macSend({ t: 'reset' }); Object.assign(RS, DEFAULTS); syncRemote(); };
+let macLocked = false;
+function setLockedUI(on) {
+  macLocked = on;
+  $('remoteBox').style.opacity = on ? '0.4' : '1';
+  $('remoteBox').style.pointerEvents = on ? 'none' : 'auto';
+  $('rLock').textContent = on ? 'Unlock to adjust' : 'Lock settings & run fast';
+  $('rStatus').textContent = on ? 'Locked: the headset is running at full speed. Unlock to change settings.' : 'Unlocked. Changes apply live.';
+}
+function toggleLock() { if (macLocked) { macSend({ t: 'unlock' }); setLockedUI(false); } else { macSend({ t: 'lock' }); setLockedUI(true); } }
+$('rLock').onclick = toggleLock;
 
-const ACTIONS = [['next', 'Next setting'], ['prev', 'Previous setting'], ['inc', 'Increase'], ['dec', 'Decrease'], ['recenter', 'Recenter headset']];
-const DEFAULT_BINDS = { next: 'k:ArrowDown', prev: 'k:ArrowUp', inc: 'k:ArrowRight', dec: 'k:ArrowLeft', recenter: 'k:KeyR' };
+const ACTIONS = [['next', 'Next setting'], ['prev', 'Previous setting'], ['inc', 'Increase'], ['dec', 'Decrease'], ['recenter', 'Recenter headset'], ['toggleLock', 'Lock / unlock settings']];
+const DEFAULT_BINDS = { next: 'k:ArrowDown', prev: 'k:ArrowUp', inc: 'k:ArrowRight', dec: 'k:ArrowLeft', recenter: 'k:KeyR', toggleLock: 'k:Enter' };
 let bindings = Object.assign({}, DEFAULT_BINDS), learning = null, padNames = [];
 try { Object.assign(bindings, JSON.parse(localStorage.getItem('cdesk-binds') || '{}')); } catch (e) {}
 const prettyId = id => id.startsWith('k:') ? 'Key ' + id.slice(2) : id.startsWith('b:') ? 'Button ' + id.slice(2) : 'Axis ' + id.slice(2);
 function doAction(a) {
+  if (a === 'toggleLock') { toggleLock(); return; }
+  if (macLocked && a !== 'recenter') return;
   const keys = SLIDERS.map(s => s[0]), i = keys.indexOf(selKey);
   if (a === 'next') selectRemote(keys[(i + 1) % keys.length], true);
   else if (a === 'prev') selectRemote(keys[(i - 1 + keys.length) % keys.length], true);
@@ -817,9 +848,11 @@ void main(){
   // in-headset message strip and calibration grid
   vec2 tg = dl.xy / (-dl.z);
   vec2 hq = vec2((tg.x - uEye * 0.008) / 0.8 + 0.5, 1.0 - ((tg.y + 0.40) / 0.15 + 0.5));
-  vec4 hv = texture2D(uHud, clamp(hq, 0.0, 1.0));
-  float hin = step(0.0, hq.x) * step(hq.x, 1.0) * step(0.0, hq.y) * step(hq.y, 1.0);
-  col = mix(col, hv.rgb, hv.a * hin * uHudOp);
+  if (uHudOp > 0.001) {
+    vec4 hv = texture2D(uHud, clamp(hq, 0.0, 1.0));
+    float hin = step(0.0, hq.x) * step(hq.x, 1.0) * step(0.0, hq.y) * step(hq.y, 1.0);
+    col = mix(col, hv.rgb, hv.a * hin * uHudOp);
+  }
   if (uCalib > 0.5) {
     vec2 gq = abs(fract(tg * 4.0 + 0.5) - 0.5);
     float ln = 1.0 - smoothstep(0.01, 0.03, min(gq.x, gq.y));
@@ -876,8 +909,8 @@ function initGL() {
 
   // Input: tap recenters, two-finger tap opens settings, drag looks around when there's no gyro.
   const st = $('stage');
-  st.addEventListener('touchstart', e => { if (e.touches.length >= 2) { buildPanel(); $('settings').hidden = false; e.preventDefault(); } }, { passive: false });
-  st.addEventListener('click', () => { if (!$('settings').hidden) return; recenter(); if (!sensor) { mYaw = 0; mPitch = 0; rawR = mouseR(); } toast('Recentered', 1200); });
+  st.addEventListener('touchstart', e => { if (e.touches.length >= 2) { if (runMode) leaveRun(); buildPanel(); $('settings').hidden = false; e.preventDefault(); } }, { passive: false });
+  st.addEventListener('click', () => { if (!$('settings').hidden) return; recenter(); if (!sensor) { mYaw = 0; mPitch = 0; rawR = mouseR(); } if (!runMode) toast('Recentered', 1200); });
   glCanvas.addEventListener('pointerdown', e => { if (!sensor) drag = [e.clientX, e.clientY]; });
   addEventListener('pointerup', () => { drag = null; });
   addEventListener('pointermove', e => { if (!drag || sensor) return;
@@ -895,11 +928,14 @@ function upload(tex, unit, video) {
 }
 
 let hudT = 0;
+let fpsFrames = 0, fpsVal = 0;
 function updateHud(now, camOK, scrOK) {
-  if (now - hudT < 400) return; hudT = now;
-  const el = $('hud'); el.hidden = !S.hud; if (!S.hud) return;
+  fpsFrames++;
+  if (now - hudT < 400) return;
+  fpsVal = Math.round(fpsFrames * 1000 / (now - hudT)); fpsFrames = 0; hudT = now;
+  const el = $('hud'); el.hidden = runMode || !S.hud; if (runMode || !S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'v7 | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+  el.textContent = 'v8 | ' + fpsVal + ' fps | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
     (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data') + (S.hand ? ' | hands ' + (hl ? 'on' : 'loading') : '');
 }
 
