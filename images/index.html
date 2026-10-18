@@ -52,7 +52,7 @@
 
 <!-- HOME -->
 <section class="screen" id="home">
-  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v8</small></h1>
+  <h1>Cardboard Desk <small style="font-size:13px;color:var(--dim);font-weight:400">v9</small></h1>
   <div class="status" id="rtcInfo"></div>
   <p>See your Mac screen floating in front of the real world, using an iPhone in a cardboard headset. Pick which device you're on.</p>
   <button id="btnSender">🖥️ I'm on the Mac (share my screen)</button>
@@ -150,6 +150,9 @@
     <span><button class="alt small" id="resetS">Reset</button> <button class="small" id="closeS">Done</button></span>
   </div>
   <button id="lockBtn">Lock settings &amp; run fast</button>
+  <button id="bgBtn" class="alt">🖼️ Choose background image…</button>
+  <button id="bgClear" class="alt">Remove background image</button>
+  <input type="file" id="bgFile" accept="image/*" hidden>
   <div id="sliders"></div>
   <label class="check"><input type="checkbox" id="chkLock"> Pin screen to my head (ignore gyro)</label>
   <label class="check"><input type="checkbox" id="chkFlip"> Flip camera 180° (if passthrough is upside down)</label>
@@ -199,9 +202,9 @@ $('btnViewer').onclick = () => showScreen('viewer');
 document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => location.reload());
 
 /* ------------------------------------------------------------ settings */
-const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true, sharp:0.5, dpr:3, hand:false, lensX:0, lensY:0, calib:false };
+const DEFAULTS = { fov:0.5, k1:0.34, k2:0.55, ipd:0.060, dist:1.5, width:2.4, camFov:62, camOp:1, scrOp:1, lock:false, flip:false, hud:true, sharp:0.5, dpr:3, hand:false, lensX:0, lensY:0, calib:false, camZoom:1, bg:0 };
 const SLIDERS = [
-  ['fov',    'Zoom (lower = bigger picture)', 0.25, 1.2, 0.01],
+  ['fov',    'Picture size (lower = bigger)', 0.25, 1.2, 0.01],
   ['k1',     'Lens correction k1', 0, 1, 0.01],
   ['k2',     'Lens correction k2', 0, 1, 0.01],
   ['ipd',    'Eye separation for screen depth (m)', 0, 0.08, 0.001],
@@ -209,6 +212,8 @@ const SLIDERS = [
   ['width',  'Screen width (m)', 0.5, 8, 0.1],
   ['camFov', 'iPhone camera field of view (°)', 40, 110, 1],
   ['camOp',  'Passthrough brightness', 0, 1, 0.05],
+  ['camZoom', 'Camera zoom', 1, 5, 0.05],
+  ['bg',     'Background: 0 camera · 1 image · 2 black', 0, 2, 1],
   ['scrOp',  'Mac screen opacity', 0.1, 1, 0.05],
   ['sharp',  'Text sharpening', 0, 1.5, 0.05],
   ['dpr',    'Render resolution (lower = faster)', 1, 3, 0.25],
@@ -323,6 +328,54 @@ const camV = $('camV'), scrV = $('scrV');
 let hasCam = false, hasScr = false;
 let macState = 'not started', linkState = '';
 
+/* ------------------------------------------------------ camera zoom */
+let camTrack = null, hwZoom = null, hwApplied = 1, zoomT = null, lastZoomReq = null;
+function setupZoom() {
+  hwZoom = null; hwApplied = 1;
+  try { const caps = camTrack && camTrack.getCapabilities ? camTrack.getCapabilities() : {}; if (caps && caps.zoom && caps.zoom.max > caps.zoom.min) hwZoom = caps.zoom; } catch (e) {}
+}
+function applyZoom() {
+  if (!hwZoom || !camTrack) return;
+  clearTimeout(zoomT);
+  zoomT = setTimeout(async () => {
+    const z = Math.max(hwZoom.min, Math.min(hwZoom.max, S.camZoom));
+    try { await camTrack.applyConstraints({ advanced: [{ zoom: z }] }); const st = camTrack.getSettings ? camTrack.getSettings() : {}; hwApplied = st.zoom || z; }
+    catch (e) { hwZoom = null; hwApplied = 1; }
+  }, 120);
+}
+
+/* ---------------------------------------------------- background image */
+let texBg = null, bgPending = null, bgAspect = 2, bgReady = false;
+function idbOp(mode, fn) {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open('cdesk', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+    rq.onerror = () => rej(rq.error);
+    rq.onsuccess = () => { const tx = rq.result.transaction('kv', mode); const out = fn(tx.objectStore('kv')); tx.oncomplete = () => res(out && out.result); tx.onerror = () => rej(tx.error); };
+  });
+}
+const idbGet = k => idbOp('readonly', s => s.get(k));
+const idbSet = (k, v) => idbOp('readwrite', s => s.put(v, k));
+const idbDel = k => idbOp('readwrite', s => s.delete(k));
+async function setBgFromBlob(blob, persist) {
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, 4096 / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  bgPending = cv; bgAspect = w / h;
+  if (persist) cv.toBlob(b => { if (b) idbSet('bg', b).catch(() => {}); }, 'image/jpeg', 0.9);
+}
+$('bgBtn').onclick = () => $('bgFile').click();
+$('bgFile').onchange = async e => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  try { await setBgFromBlob(f, true); S.bg = 1; saveS(); buildPanel(); toast('Background image set', 2000); }
+  catch (err) { toast('Could not read that image: ' + (err.message || err), 5000); }
+  e.target.value = '';
+};
+$('bgClear').onclick = () => { bgPending = null; bgReady = false; idbDel('bg').catch(() => {}); if (S.bg === 1) S.bg = 0; saveS(); buildPanel(); toast('Background image removed', 2000); };
+try { idbGet('bg').then(b => { if (b) setBgFromBlob(b, false); }).catch(() => {}); } catch (e) {}
+
 /* ------------------------------------------------ manual pairing (no server) */
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 const b64 = u8 => { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
@@ -432,7 +485,7 @@ $('makeAnswer').onclick = async () => {
 $('copyAnswer').onclick = () => copyText($('answerOut'), $('copyAnswer'));
 
 /* ------------------------------------------- live remote control (Mac -> headset) */
-const SHORT = { fov: 'Zoom', k1: 'Lens k1', k2: 'Lens k2', ipd: 'Eye separation', dist: 'Screen distance', width: 'Screen width', camFov: 'Camera FOV', camOp: 'Passthrough', scrOp: 'Screen opacity', sharp: 'Sharpening', dpr: 'Resolution', lensX: 'Image centers', lensY: 'Image height', lock: 'Pinned to head', flip: 'Camera flip', hud: 'Status text', hand: 'Hand control', calib: 'Calibration grid' };
+const SHORT = { camZoom: 'Camera zoom', bg: 'Background', fov: 'Picture size', k1: 'Lens k1', k2: 'Lens k2', ipd: 'Eye separation', dist: 'Screen distance', width: 'Screen width', camFov: 'Camera FOV', camOp: 'Passthrough', scrOp: 'Screen opacity', sharp: 'Sharpening', dpr: 'Resolution', lensX: 'Image centers', lensY: 'Image height', lock: 'Pinned to head', flip: 'Camera flip', hud: 'Status text', hand: 'Hand control', calib: 'Calibration grid' };
 const fmtVal = v => (typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : (v ? 'on' : 'off'));
 let macDC = null, phoneDC = null, viewerConn = null;
 let runMode = false, saveT = null;
@@ -632,6 +685,8 @@ async function startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } }, audio: false });
     camV.srcObject = stream; await camV.play(); hasCam = true;
+    camTrack = stream.getVideoTracks()[0]; setupZoom(); lastZoomReq = null;
+    toast(hwZoom ? 'Camera zoom: hardware (up to ' + Math.round(hwZoom.max * 10) / 10 + '×)' : 'Camera zoom: digital (this browser has no hardware zoom)', 3500);
   } catch (e) { toast('Camera unavailable: ' + (e.message || e.name), 5000); }
 }
 
@@ -798,13 +853,13 @@ const VS = `attribute vec2 aPos; varying vec2 vUv;
 void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
 const FS = `precision highp float;
 varying vec2 vUv;
-uniform sampler2D uCam, uScr, uHud;
+uniform sampler2D uCam, uScr, uHud, uBg;
 uniform mat3 uRot;
 uniform float uEye, uEyeAspect, uTan, uIpd, uDist, uWidth, uScrAspect;
 uniform float uCamOp, uScrOp, uHasCam, uHasScr, uCamFlip;
 uniform vec2 uK, uCamTan, uScrStep;
 uniform vec3 uH0, uH1;
-uniform float uCamAspect, uSharp, uCalib, uHudOp;
+uniform float uCamAspect, uSharp, uCalib, uHudOp, uBgMode, uHasBg, uBgAspect;
 uniform vec2 uLens;
 void main(){
   // Eye-local lens coordinates, then inverse lens distortion.
@@ -816,14 +871,24 @@ void main(){
   vec3 dl = normalize(vec3(q * uTan, -1.0));   // view ray in headset space
   vec3 dir = uRot * dl;                          // ... in world space
 
-  // Passthrough: head-locked camera image mapped by angle.
+  // Background: head-locked camera passthrough, or a world-locked image, or black.
   vec3 col = vec3(0.0);
   vec2 c = dl.xy / (-dl.z) / uCamTan;
   if (uCamFlip > 0.5) c = -c;
   vec2 cuv = vec2(c.x*0.5 + 0.5, 0.5 - c.y*0.5);
-  vec3 camC = texture2D(uCam, clamp(cuv, 0.0, 1.0)).rgb;
-  float camIn = step(0.0, cuv.x) * step(cuv.x, 1.0) * step(0.0, cuv.y) * step(cuv.y, 1.0);
-  col = camC * camIn * uCamOp * uHasCam;
+  if (uBgMode < 0.5) {
+    vec3 camC = texture2D(uCam, clamp(cuv, 0.0, 1.0)).rgb;
+    float camIn = step(0.0, cuv.x) * step(cuv.x, 1.0) * step(0.0, cuv.y) * step(cuv.y, 1.0);
+    col = camC * camIn * uCamOp * uHasCam;
+  } else if (uBgMode < 1.5) {
+    float spanV = uBgAspect >= 1.9 ? 3.14159265 : 2.1;
+    float spanH = uBgAspect >= 1.9 ? 6.2831853 : min(6.2831853, spanV * uBgAspect);
+    float lon = atan(dir.x, -dir.z);
+    float lat = asin(clamp(dir.y, -1.0, 1.0));
+    vec2 buv = vec2(lon / spanH + 0.5, 0.5 - lat / spanV);
+    float bin = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
+    col = texture2D(uBg, clamp(buv, 0.0, 1.0)).rgb * bin * uHasBg;
+  }
 
   // Mac screen: a flat quad floating in the world, seen with real stereo parallax.
   vec3 o = uRot * vec3(uEye * uIpd * 0.5, 0.0, 0.0);
@@ -883,7 +948,7 @@ function initGL() {
   const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'aPos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan','uScrStep','uH0','uH1','uCamAspect','uSharp','uHud','uHudOp','uLens','uCalib'])
+  for (const n of ['uCam','uScr','uRot','uEye','uEyeAspect','uTan','uIpd','uDist','uWidth','uScrAspect','uCamOp','uScrOp','uHasCam','uHasScr','uCamFlip','uK','uCamTan','uScrStep','uH0','uH1','uCamAspect','uSharp','uHud','uHudOp','uLens','uCalib','uBg','uBgMode','uHasBg','uBgAspect'])
     U[n] = gl.getUniformLocation(prog, n);
   const mk = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -894,11 +959,15 @@ function initGL() {
   if (isGL2) { gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); }
   { const an = gl.getExtension('EXT_texture_filter_anisotropic');
     if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT))); }
-  gl.uniform1i(U.uCam, 0); gl.uniform1i(U.uScr, 1); gl.uniform1i(U.uHud, 2);
+  gl.uniform1i(U.uCam, 0); gl.uniform1i(U.uScr, 1); gl.uniform1i(U.uHud, 2); gl.uniform1i(U.uBg, 3);
   texHud = gl.createTexture(); gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texHud);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+  texBg = gl.createTexture(); gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texBg);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
   if (hasRVFC) {
     const w = (v, set) => { const cb = () => { set(); v.requestVideoFrameCallback(cb); }; v.requestVideoFrameCallback(cb); };
     w(camV, () => camNew = true); w(scrV, () => scrNew = true);
@@ -935,7 +1004,7 @@ function updateHud(now, camOK, scrOK) {
   fpsVal = Math.round(fpsFrames * 1000 / (now - hudT)); fpsFrames = 0; hudT = now;
   const el = $('hud'); el.hidden = runMode || !S.hud; if (runMode || !S.hud) return;
   let q = ''; try { const v = scrV.getVideoPlaybackQuality && scrV.getVideoPlaybackQuality(); if (v) q = ' f' + v.totalVideoFrames; } catch (e) {}
-  el.textContent = 'v8 | ' + fpsVal + ' fps | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
+  el.textContent = 'v9 | ' + fpsVal + ' fps | cam: ' + (camOK ? camV.videoWidth + '×' + camV.videoHeight : 'off') + ' | mac: ' + macState +
     (scrOK ? ' ' + scrV.videoWidth + '×' + scrV.videoHeight + q : '') + (linkState ? ' | ice ' + linkState : '') + (sensor ? '' : ' | no motion data') + (S.hand ? ' | hands ' + (hl ? 'on' : 'loading') : '');
 }
 
@@ -971,11 +1040,15 @@ function frame() {
   { const nowMs = performance.now();
     if (hudDirty && texHud) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texHud); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, hudC); hudDirty = false; }
     gl.uniform1f(U.uHudOp, Math.max(0, Math.min(1, (hudUntil - nowMs) / 400))); }
+  if (bgPending && texBg) { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texBg); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bgPending); bgReady = true; bgPending = null; }
+  if (S.camZoom !== lastZoomReq) { lastZoomReq = S.camZoom; applyZoom(); }
   // Camera FOV is measured along the long side of the video.
   const ca = camOK ? camV.videoWidth / camV.videoHeight : 16 / 9;
   const tl = Math.tan(S.camFov * Math.PI / 360);
-  camTanX = ca >= 1 ? tl : tl * ca; camTanY = ca >= 1 ? tl / ca : tl; camAsp = ca;
+  const zr = Math.max(0.2, S.camZoom / (hwZoom ? hwApplied : 1));      // zoom left over after any hardware zoom
+  camTanX = (ca >= 1 ? tl : tl * ca) * zr; camTanY = (ca >= 1 ? tl / ca : tl) * zr; camAsp = ca;
   gl.uniform2f(U.uCamTan, camTanX, camTanY); gl.uniform1f(U.uCamAspect, ca);
+  gl.uniform1f(U.uBgMode, S.bg); gl.uniform1f(U.uHasBg, bgReady ? 1 : 0); gl.uniform1f(U.uBgAspect, bgAspect);
   gl.uniform3f(U.uH0, handDots[0], handDots[1], handDots[2]); gl.uniform3f(U.uH1, handDots[3], handDots[4], handDots[5]);
 
   const hw = Math.floor(W / 2);
